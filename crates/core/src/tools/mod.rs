@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 pub mod bash;
 pub mod edit;
 pub mod fetch;
@@ -15,6 +16,7 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
+use crate::capabilities::Capabilities;
 use crate::permission;
 
 // ---------------------------------------------------------------------------
@@ -139,17 +141,21 @@ impl ToolRegistry {
     }
 }
 
-/// Create a registry with the default set of tools.
-pub fn default_registry() -> ToolRegistry {
+/// Create a registry with the default set of tools, bound to `caps`.
+pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
     let mut r = ToolRegistry::new();
+
+    // Bash needs a real OS: a wasm guest has no processes to spawn.
+    #[cfg(not(target_arch = "wasm32"))]
     r.register(bash::BashTool);
-    r.register(read::ReadTool);
-    r.register(write::WriteTool);
-    r.register(edit::EditTool);
+
+    r.register(read::ReadTool::new(caps.fs.clone()));
+    r.register(write::WriteTool::new(caps.fs.clone()));
+    r.register(edit::EditTool::new(caps.fs.clone()));
     r.register(glob::GlobTool);
     r.register(grep::GrepTool);
-    r.register(list::ListTool);
-    r.register(fetch::FetchTool::new());
+    r.register(list::ListTool::new(caps.fs.clone()));
+    r.register(fetch::FetchTool::new(caps.http.clone()));
 
     #[cfg(feature = "git")]
     r.register(git::GitTool);

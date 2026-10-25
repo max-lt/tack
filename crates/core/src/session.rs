@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 
 use crate::api::{ApiClient, Content, ContentBlock, DEFAULT_MODEL, Message, StopReason, Usage};
+use crate::capabilities::Capabilities;
 use crate::event::EventHandler;
 use crate::history::{self, StoredSession};
 use crate::permission::{AllowAll, PermissionHandler};
@@ -36,6 +37,7 @@ pub struct SessionBuilder {
     access_token: String,
     is_oauth: bool,
     cwd: Option<PathBuf>,
+    capabilities: Option<Capabilities>,
 }
 
 impl SessionBuilder {
@@ -44,12 +46,20 @@ impl SessionBuilder {
             access_token,
             is_oauth,
             cwd: None,
+            capabilities: None,
         }
     }
 
     #[must_use]
     pub fn cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
+        self
+    }
+
+    /// Give the session its filesystem and network. A native build defaults
+    /// to the local ones; a wasm build must call this.
+    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = Some(capabilities);
         self
     }
 
@@ -115,14 +125,21 @@ impl SessionBuilder {
 
         let bootstrap_len = bootstrap_messages.len();
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let caps = self.capabilities.unwrap_or_else(Capabilities::local);
+        #[cfg(target_arch = "wasm32")]
+        let caps = self
+            .capabilities
+            .context("a wasm session needs capabilities from its host")?;
+
         Ok(Session {
-            client: ApiClient::new(self.access_token, self.is_oauth),
+            client: ApiClient::new(caps.http.clone(), self.access_token, self.is_oauth),
             cwd,
             permissions,
             messages: bootstrap_messages,
             bootstrap_len,
             system_prompt,
-            tools: tools::default_registry(),
+            tools: tools::default_registry(&caps),
             id: history::new_id(),
             context_used: 0,
         })
@@ -166,8 +183,8 @@ impl<P: PermissionHandler> Session<P> {
     /// Rough token count of the whole conversation (about 4 bytes of JSON per
     /// token), for sessions saved without a measured value.
     fn estimate_context(&self) -> u64 {
-        let bytes = serde_json::to_string(&self.messages).map_or(0, |s| s.len())
-            + self.system_prompt.len();
+        let bytes =
+            serde_json::to_string(&self.messages).map_or(0, |s| s.len()) + self.system_prompt.len();
         (bytes / 4) as u64
     }
 
@@ -265,8 +282,7 @@ impl<P: PermissionHandler> Session<P> {
             // The reply below is appended to the history, so it counts too.
             // With caching, `input_tokens` is only the uncached tail, so the
             // cached parts are added back to get the real prompt size.
-            context_used =
-                stream_result.usage.prompt_tokens() + stream_result.usage.output_tokens;
+            context_used = stream_result.usage.prompt_tokens() + stream_result.usage.output_tokens;
 
             // Push assistant message with all content blocks
             self.messages.push(Message {

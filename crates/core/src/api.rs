@@ -1,12 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use reqwest_eventsource::{Event, EventSource};
+use http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::event::EventHandler;
+use crate::http::{Http, Method, Request};
 use crate::openai;
 use crate::provider::{Provider, wire_model};
 
@@ -256,22 +259,20 @@ impl StreamState {
 // API client
 // ---------------------------------------------------------------------------
 
+/// Upper bound for one streamed response, from request to last event.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 pub(crate) struct ApiClient {
-    client: reqwest::Client,
+    http: Arc<dyn Http>,
     access_token: String,
     is_oauth: bool,
     model: String,
 }
 
 impl ApiClient {
-    pub(crate) fn new(access_token: String, is_oauth: bool) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .expect("failed to build HTTP client");
-
+    pub(crate) fn new(http: Arc<dyn Http>, access_token: String, is_oauth: bool) -> Self {
         Self {
-            client,
+            http,
             access_token,
             is_oauth,
             model: DEFAULT_MODEL.to_string(),
@@ -395,24 +396,29 @@ impl ApiClient {
     }
 
     /// Apply the provider's endpoint and authentication.
-    fn build_request(&self, body: &serde_json::Value) -> Result<reqwest::RequestBuilder> {
+    fn build_request(&self, body: &serde_json::Value) -> Result<Request> {
         let provider = self.provider();
 
-        let mut req = self
-            .client
-            .post(provider.endpoint())
-            .header("content-type", "application/json");
+        let mut req = Request::new(Method::POST, provider.endpoint(), REQUEST_TIMEOUT);
+        req.headers
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let mut header = |name: HeaderName, value: &str| -> Result<()> {
+            req.headers.insert(name, HeaderValue::from_str(value)?);
+            Ok(())
+        };
 
         match provider {
             Provider::Anthropic => {
-                req = req.header("anthropic-version", API_VERSION);
+                header(HeaderName::from_static("anthropic-version"), API_VERSION)?;
 
                 if self.is_oauth {
-                    req = req
-                        .header("authorization", format!("Bearer {}", self.access_token))
-                        .header("anthropic-beta", "oauth-2025-04-20");
+                    header(AUTHORIZATION, &format!("Bearer {}", self.access_token))?;
+                    header(
+                        HeaderName::from_static("anthropic-beta"),
+                        "oauth-2025-04-20",
+                    )?;
                 } else {
-                    req = req.header("x-api-key", &self.access_token);
+                    header(HeaderName::from_static("x-api-key"), &self.access_token)?;
                 }
             }
             Provider::Cerebras => {
@@ -424,18 +430,19 @@ impl ApiClient {
                     )
                 })?;
 
-                req = req.header("authorization", format!("Bearer {key}"));
+                header(AUTHORIZATION, &format!("Bearer {key}"))?;
             }
             Provider::LmStudio => {
                 if let Ok(key) = std::env::var(LM_STUDIO_KEY_VAR)
                     && !key.is_empty()
                 {
-                    req = req.header("authorization", format!("Bearer {key}"));
+                    header(AUTHORIZATION, &format!("Bearer {key}"))?;
                 }
             }
         }
 
-        Ok(req.json(body))
+        req.body = serde_json::to_vec(body)?;
+        Ok(req)
     }
 
     pub(crate) async fn stream_message(
@@ -469,56 +476,56 @@ impl ApiClient {
         }
 
         let request = self.build_request(&body)?;
-        let mut es = EventSource::new(request).context("Failed to create event source")?;
+
+        let response = tokio::select! {
+            response = self.http.send(request) => response.context("Stream error")?,
+            () = cancel.cancelled() => anyhow::bail!("Cancelled"),
+        };
+
+        if response.status == http::StatusCode::BAD_REQUEST {
+            anyhow::bail!(
+                "API request rejected (400 Bad Request). The request may be too large. \
+                 Try using /clear to start a new conversation."
+            );
+        }
+
+        if !response.status.is_success() {
+            let status = response.status;
+            let detail = response.bytes().await.unwrap_or_default();
+            anyhow::bail!(
+                "Stream error: HTTP {status}: {}",
+                String::from_utf8_lossy(&detail)
+            );
+        }
+
+        let mut events = response.body.eventsource();
 
         let mut state = StreamState::new();
         let mut chunks = openai::Accumulator::default();
 
         loop {
             tokio::select! {
-                event = es.next() => {
+                event = events.next() => {
                     let Some(event) = event else { break };
+                    let msg = event.map_err(|e| anyhow::anyhow!("Stream error: {e}"))?;
 
-                    match event {
-                        Ok(Event::Open) => {}
-                        Ok(Event::Message(msg)) => {
-                            // Cerebras sends unnamed events carrying one chat
-                            // completion chunk each; Anthropic names them.
-                            let done = match provider {
-                                Provider::Anthropic => {
-                                    handle_sse_event(&msg.event, &msg.data, &mut state, handler)?
-                                }
-                                Provider::Cerebras | Provider::LmStudio => {
-                                    chunks.handle_chunk(&msg.data, handler)?
-                                }
-                            };
-
-                            if done {
-                                es.close();
-                                break;
-                            }
+                    // Cerebras sends unnamed events carrying one chat
+                    // completion chunk each; Anthropic names them.
+                    let done = match provider {
+                        Provider::Anthropic => {
+                            handle_sse_event(&msg.event, &msg.data, &mut state, handler)?
                         }
-                        Err(reqwest_eventsource::Error::StreamEnded) => break,
-                        Err(e) => {
-                            es.close();
-
-                            // Better error messages for common cases
-                            let err_str = e.to_string();
-
-                            if err_str.contains("400") || err_str.contains("Bad Request") {
-                                anyhow::bail!(
-                                    "API request rejected (400 Bad Request). The request may be too large. \
-                                     Try using /clear to start a new conversation."
-                                );
-                            }
-
-                            anyhow::bail!("Stream error: {e}");
+                        Provider::Cerebras | Provider::LmStudio => {
+                            chunks.handle_chunk(&msg.data, handler)?
                         }
+                    };
+
+                    if done {
+                        break;
                     }
                 }
 
                 () = cancel.cancelled() => {
-                    es.close();
                     anyhow::bail!("Cancelled");
                 }
             }
@@ -642,11 +649,15 @@ mod tests {
 
     const TEST_LIMIT: usize = 500_000;
 
+    fn test_http() -> Arc<dyn Http> {
+        Arc::new(crate::http::LocalHttp::new())
+    }
+
     /// The Anthropic body must keep its original shape: a top-level `system`,
     /// raw tool definitions, and `max_tokens`.
     #[test]
     fn anthropic_body_is_unchanged_by_provider_routing() {
-        let client = ApiClient::new("token".to_string(), true);
+        let client = ApiClient::new(test_http(), "token".to_string(), true);
         assert_eq!(client.provider(), Provider::Anthropic);
 
         let messages = vec![Message {
@@ -699,7 +710,7 @@ mod tests {
 
     #[test]
     fn cache_breakpoints_go_on_the_last_two_user_messages() {
-        let client = ApiClient::new("token".to_string(), true);
+        let client = ApiClient::new(test_http(), "token".to_string(), true);
 
         let messages = vec![
             user(Content::text("first")),
@@ -734,7 +745,7 @@ mod tests {
 
     #[test]
     fn cache_breakpoints_skip_empty_text() {
-        let client = ApiClient::new("token".to_string(), true);
+        let client = ApiClient::new(test_http(), "token".to_string(), true);
         let body = client.build_body(&[user(Content::text(""))], None, None);
 
         assert_eq!(body["messages"][0]["content"], "");
@@ -743,7 +754,7 @@ mod tests {
 
     #[test]
     fn stored_history_is_not_marked() {
-        let client = ApiClient::new("token".to_string(), true);
+        let client = ApiClient::new(test_http(), "token".to_string(), true);
         let messages = vec![user(Content::text("hi"))];
         let _ = client.build_body(&messages, Some("sys"), None);
 
@@ -754,7 +765,7 @@ mod tests {
     #[test]
     fn openai_bodies_get_no_cache_markers() {
         for model in ["qwen-3.8-27b", "lmstudio:some-model"] {
-            let mut client = ApiClient::new("token".to_string(), true);
+            let mut client = ApiClient::new(test_http(), "token".to_string(), true);
             client.set_model(model.to_string());
 
             let body = client.build_body(&[user(Content::text("hi"))], Some("sys"), None);
@@ -791,7 +802,7 @@ mod tests {
 
     #[test]
     fn switching_model_switches_the_wire_format() {
-        let mut client = ApiClient::new("token".to_string(), true);
+        let mut client = ApiClient::new(test_http(), "token".to_string(), true);
         client.set_model("qwen-3.8-27b".to_string());
 
         let body = client.build_body(&[], Some("be brief"), None);
@@ -831,7 +842,7 @@ mod tests {
             }
         }
 
-        let mut client = ApiClient::new(String::new(), false);
+        let mut client = ApiClient::new(test_http(), String::new(), false);
         client.set_model("qwen-3.8-27b".to_string());
         assert_eq!(client.provider(), Provider::Cerebras);
 

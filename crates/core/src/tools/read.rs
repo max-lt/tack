@@ -1,8 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{ToolDef, ToolOutput};
+use crate::fs::Fs;
 
-pub struct ReadTool;
+pub struct ReadTool {
+    fs: Arc<dyn Fs>,
+}
+
+impl ReadTool {
+    pub fn new(fs: Arc<dyn Fs>) -> Self {
+        Self { fs }
+    }
+}
 
 impl ToolDef for ReadTool {
     fn name(&self) -> &'static str {
@@ -47,7 +57,7 @@ impl ToolDef for ReadTool {
             cwd.join(file_path)
         };
 
-        let content = match tokio::fs::read_to_string(&resolved).await {
+        let content = match self.fs.read_to_string(&resolved).await {
             Ok(c) => c,
             Err(e) => {
                 return ToolOutput::error(format!("Failed to read {}: {e}", resolved.display()));

@@ -1,28 +1,21 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
+use http::header::{CONTENT_TYPE, HeaderName, HeaderValue, USER_AGENT};
 
 use super::{ToolDef, ToolOutput};
+use crate::http::{self as net, Http, Method, Request};
+
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct FetchTool {
-    client: reqwest::Client,
-}
-
-impl Default for FetchTool {
-    fn default() -> Self {
-        Self::new()
-    }
+    http: Arc<dyn Http>,
 }
 
 impl FetchTool {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+    pub fn new(http: Arc<dyn Http>) -> Self {
+        Self { http }
     }
 }
 
@@ -80,12 +73,12 @@ impl ToolDef for FetchTool {
             .unwrap_or("GET");
 
         let method = match method_str.to_uppercase().as_str() {
-            "GET" => reqwest::Method::GET,
-            "POST" => reqwest::Method::POST,
-            "PUT" => reqwest::Method::PUT,
-            "PATCH" => reqwest::Method::PATCH,
-            "DELETE" => reqwest::Method::DELETE,
-            "HEAD" => reqwest::Method::HEAD,
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "PATCH" => Method::PATCH,
+            "DELETE" => Method::DELETE,
+            "HEAD" => Method::HEAD,
             other => return ToolOutput::error(format!("Unsupported HTTP method: {other}")),
         };
 
@@ -94,17 +87,18 @@ impl ToolDef for FetchTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(1_048_576) as usize;
 
-        let mut request = self.client.request(method.clone(), url);
+        let mut request = Request::new(method.clone(), url, TIMEOUT);
 
         // Default User-Agent mimics Firefox to avoid bot-blocking
-        request = request.header(
+        request.headers.insert(
             USER_AGENT,
-            "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+            HeaderValue::from_static(
+                "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+            ),
         );
 
         // Custom headers
         if let Some(headers_obj) = input.get("headers").and_then(|v| v.as_object()) {
-            let mut header_map = HeaderMap::new();
             for (key, val) in headers_obj {
                 let name = match key.parse::<HeaderName>() {
                     Ok(n) => n,
@@ -123,31 +117,28 @@ impl ToolDef for FetchTool {
                     },
                     None => continue,
                 };
-                header_map.insert(name, value);
+                request.headers.insert(name, value);
             }
-            request = request.headers(header_map);
         }
 
         // Body
         if let Some(body) = input.get("body").and_then(|v| v.as_str()) {
-            request = request.body(body.to_string());
+            request.body = body.as_bytes().to_vec();
         }
 
         // Execute
-        let response = match request.send().await {
+        let response = match self.http.send(request).await {
             Ok(r) => r,
-            Err(e) => {
-                if e.is_timeout() {
-                    return ToolOutput::error(format!("Request timed out: {url}"));
-                }
-                if e.is_connect() {
-                    return ToolOutput::error(format!("Connection failed: {url}"));
-                }
-                return ToolOutput::error(format!("HTTP request failed: {e}"));
+            Err(net::Error::Timeout) => {
+                return ToolOutput::error(format!("Request timed out: {url}"));
             }
+            Err(net::Error::Connect(_)) => {
+                return ToolOutput::error(format!("Connection failed: {url}"));
+            }
+            Err(e) => return ToolOutput::error(format!("HTTP request failed: {e}")),
         };
 
-        let status = response.status();
+        let status = response.status;
         let status_line = format!(
             "{} {}",
             status.as_u16(),
@@ -156,21 +147,21 @@ impl ToolDef for FetchTool {
 
         // Collect response headers
         let mut resp_headers = String::new();
-        for (name, value) in response.headers() {
+        for (name, value) in &response.headers {
             if let Ok(v) = value.to_str() {
                 resp_headers.push_str(&format!("{name}: {v}\n"));
             }
         }
 
         let content_type = response
-            .headers()
+            .headers
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
 
         // HEAD requests: no body
-        if method == reqwest::Method::HEAD {
+        if method == Method::HEAD {
             return ToolOutput::success(format!("HTTP {status_line}\n\n{resp_headers}"));
         }
 

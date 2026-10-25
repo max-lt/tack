@@ -1,8 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{ToolDef, ToolOutput};
+use crate::fs::Fs;
 
-pub struct WriteTool;
+pub struct WriteTool {
+    fs: Arc<dyn Fs>,
+}
+
+impl WriteTool {
+    pub fn new(fs: Arc<dyn Fs>) -> Self {
+        Self { fs }
+    }
+}
 
 impl ToolDef for WriteTool {
     fn name(&self) -> &'static str {
@@ -50,7 +60,7 @@ impl ToolDef for WriteTool {
 
         // Ensure parent directories exist
         if let Some(parent) = resolved.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await
+            && let Err(e) = self.fs.create_dir_all(parent).await
         {
             return ToolOutput::error(format!(
                 "Failed to create directories for {}: {e}",
@@ -58,7 +68,7 @@ impl ToolDef for WriteTool {
             ));
         }
 
-        match tokio::fs::write(&resolved, content).await {
+        match self.fs.write(&resolved, content.as_bytes()).await {
             Ok(()) => ToolOutput::success(format!(
                 "Wrote {} bytes to {}",
                 content.len(),

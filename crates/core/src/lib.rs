@@ -1,8 +1,13 @@
 pub mod api;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod auth;
+pub mod capabilities;
 pub mod config;
 pub mod event;
+pub mod fs;
 pub mod history;
+pub mod http;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod lmstudio;
 pub mod openai;
 pub mod permission;

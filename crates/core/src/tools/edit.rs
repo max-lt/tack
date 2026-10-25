@@ -1,8 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{ToolDef, ToolOutput};
+use crate::fs::Fs;
 
-pub struct EditTool;
+pub struct EditTool {
+    fs: Arc<dyn Fs>,
+}
+
+impl EditTool {
+    pub fn new(fs: Arc<dyn Fs>) -> Self {
+        Self { fs }
+    }
+}
 
 impl ToolDef for EditTool {
     fn name(&self) -> &'static str {
@@ -66,7 +76,7 @@ impl ToolDef for EditTool {
             cwd.join(file_path)
         };
 
-        let content = match tokio::fs::read_to_string(&resolved).await {
+        let content = match self.fs.read_to_string(&resolved).await {
             Ok(c) => c,
             Err(e) => {
                 return ToolOutput::error(format!("Failed to read {}: {e}", resolved.display()));
@@ -97,7 +107,7 @@ impl ToolDef for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        match tokio::fs::write(&resolved, &new_content).await {
+        match self.fs.write(&resolved, new_content.as_bytes()).await {
             Ok(()) => {
                 let msg = if replace_all {
                     format!("Replaced {count} occurrences in {}", resolved.display())

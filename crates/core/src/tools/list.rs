@@ -1,9 +1,19 @@
 use std::fmt::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{ToolDef, ToolOutput};
+use crate::fs::{EntryKind, Fs};
 
-pub struct ListTool;
+pub struct ListTool {
+    fs: Arc<dyn Fs>,
+}
+
+impl ListTool {
+    pub fn new(fs: Arc<dyn Fs>) -> Self {
+        Self { fs }
+    }
+}
 
 impl ToolDef for ListTool {
     fn name(&self) -> &'static str {
@@ -34,46 +44,29 @@ impl ToolDef for ListTool {
             None => cwd.to_path_buf(),
         };
 
-        if !dir.is_dir() {
+        if !self.fs.is_dir(&dir).await {
             return ToolOutput::error(format!("Not a directory: {}", dir.display()));
         }
 
-        let mut read_dir = match tokio::fs::read_dir(&dir).await {
-            Ok(rd) => rd,
+        let listing = match self.fs.read_dir(&dir).await {
+            Ok(l) => l,
             Err(e) => return ToolOutput::error(format!("Failed to read directory: {e}")),
         };
 
-        let mut entries: Vec<(String, &str)> = Vec::new();
-
-        loop {
-            let entry = match read_dir.next_entry().await {
-                Ok(Some(e)) => e,
-                Ok(None) => break,
-                Err(e) => return ToolOutput::error(format!("Failed to read entry: {e}")),
-            };
-
-            let name = entry.file_name().to_string_lossy().into_owned();
-
+        let mut entries: Vec<(String, &str)> = listing
+            .into_iter()
             // Skip hidden files
-            if name.starts_with('.') {
-                continue;
-            }
+            .filter(|entry| !entry.name.starts_with('.'))
+            .map(|entry| {
+                let suffix = match entry.kind {
+                    EntryKind::Dir => "/",
+                    EntryKind::Symlink => "@",
+                    EntryKind::File => "",
+                };
 
-            let file_type = match entry.file_type().await {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-
-            let suffix = if file_type.is_dir() {
-                "/"
-            } else if file_type.is_symlink() {
-                "@"
-            } else {
-                ""
-            };
-
-            entries.push((name, suffix));
-        }
+                (entry.name, suffix)
+            })
+            .collect();
 
         if entries.is_empty() {
             return ToolOutput::success("(empty directory)");
