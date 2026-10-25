@@ -18,8 +18,9 @@ pub enum Tool<'a> {
     Edit { path: &'a Path },
     Fetch { url: &'a str, method: &'a str },
     Git { subcommand: &'a str },
-    /// Start a command under a PTY.
-    TerminalOpen { command: &'a str },
+    /// Start a command under a PTY. `host` asks to run it outside the
+    /// sandbox.
+    TerminalOpen { command: &'a str, host: bool },
     /// Type into an open terminal: it can run anything the terminal runs.
     TerminalSend { input: &'a str },
     /// Read or close an open terminal.
@@ -170,7 +171,7 @@ fn rule_matches(rule: &str, tool: &Tool<'_>) -> bool {
         ("Write", Tool::Write { path }) => pattern_matches(&path.display().to_string(), pattern),
         ("Edit", Tool::Edit { path }) => pattern_matches(&path.display().to_string(), pattern),
         ("Git", Tool::Git { subcommand }) => pattern_matches(subcommand, pattern),
-        ("TerminalOpen", Tool::TerminalOpen { command }) => pattern_matches(command, pattern),
+        ("TerminalOpen", Tool::TerminalOpen { command, .. }) => pattern_matches(command, pattern),
         ("TerminalSend", Tool::TerminalSend { input }) => pattern_matches(input, pattern),
         _ => false,
     }

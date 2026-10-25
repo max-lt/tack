@@ -1,8 +1,8 @@
 //! Interactive terminals for the model: a command runs under a PTY, the
 //! model sends keys and reads the rendered screen.
 //!
-//! The command decides where the terminal is: `bash` on the host, `ssh host`,
-//! or `container run -it …` for a VM.
+//! A [`TerminalPlan`] from the sandbox decides where the terminal runs: on
+//! the host, or in a VM on a copy of the workspace.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+
+use crate::sandbox::TerminalPlan;
 
 /// Output is settled when nothing new arrived for this long.
 const SETTLE: Duration = Duration::from_millis(300);
@@ -29,6 +31,7 @@ struct Terminal {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output: Arc<Output>,
+    _lease: Option<Box<dyn Send + Sync>>,
     // Dropping the master closes the PTY.
     _master: Box<dyn MasterPty + Send>,
 }
@@ -47,9 +50,8 @@ pub struct Snapshot {
 }
 
 impl Terminals {
-    /// Run `command` with `bash -c` under a new PTY in `cwd`. An empty
-    /// command opens an interactive `bash`.
-    pub fn open(&self, command: &str, cwd: &Path, rows: u16, cols: u16) -> io::Result<u32> {
+    /// Start the plan's program under a new PTY in `cwd`.
+    pub fn open(&self, plan: TerminalPlan, cwd: &Path, rows: u16, cols: u16) -> io::Result<u32> {
         let (Some(screen_rows), Some(screen_cols)) = (NonZeroU16::new(rows), NonZeroU16::new(cols))
         else {
             return Err(io::Error::new(
@@ -67,10 +69,8 @@ impl Terminals {
             })
             .map_err(io::Error::other)?;
 
-        let mut cmd = CommandBuilder::new("bash");
-        if !command.trim().is_empty() {
-            cmd.args(["-c", command]);
-        }
+        let mut cmd = CommandBuilder::new(&plan.program);
+        cmd.args(&plan.args);
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
 
@@ -104,6 +104,7 @@ impl Terminals {
                 child,
                 writer,
                 output,
+                _lease: plan.lease,
                 _master: pty.master,
             },
         );
@@ -189,9 +190,11 @@ impl Terminals {
 
         let snapshot = self.snapshot(id, &output)?;
 
-        if let Some(mut terminal) = self.open.lock().unwrap().remove(&id) {
-            let _ = terminal.child.kill();
-        }
+        let Some(mut terminal) = self.open.lock().unwrap().remove(&id) else {
+            return Err(unknown(id));
+        };
+
+        let _ = terminal.child.kill();
 
         Ok(snapshot)
     }
@@ -232,7 +235,7 @@ pub fn parse_keys(input: &str) -> Vec<u8> {
     let mut rest = input;
 
     while let Some(start) = rest.find('<') {
-        bytes.extend_from_slice(rest[..start].as_bytes());
+        bytes.extend_from_slice(&rest.as_bytes()[..start]);
         rest = &rest[start..];
 
         let key = rest[1..].find('>').map(|end| &rest[1..=end]);
@@ -281,6 +284,7 @@ fn key_bytes(name: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::host_terminal;
 
     #[test]
     fn keys_are_translated() {
@@ -294,7 +298,9 @@ mod tests {
     async fn shell_state_survives_between_sends() {
         let terminals = Terminals::default();
         let dir = tempfile::tempdir().unwrap();
-        let id = terminals.open("", dir.path(), 24, 80).unwrap();
+        let id = terminals
+            .open(host_terminal(""), dir.path(), 24, 80)
+            .unwrap();
 
         terminals
             .send(id, &parse_keys("export X=kept; PS1='$ '<Enter>"))
@@ -323,7 +329,9 @@ mod tests {
     async fn exit_code_is_reported() {
         let terminals = Terminals::default();
         let dir = tempfile::tempdir().unwrap();
-        let id = terminals.open("exit 3", dir.path(), 24, 80).unwrap();
+        let id = terminals
+            .open(host_terminal("exit 3"), dir.path(), 24, 80)
+            .unwrap();
 
         let snapshot = terminals
             .read(id, None, Duration::from_secs(5))
@@ -342,5 +350,58 @@ mod tests {
         };
 
         assert_eq!(snapshot.exit_code, Some(3));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod container_tests {
+    use super::*;
+    use crate::sandbox::{AppleContainer, ExecRequest, FileChange, Sandbox};
+
+    /// Needs `container system start` and pulls `debian:bookworm-slim`.
+    #[tokio::test]
+    #[ignore]
+    async fn terminal_and_bash_share_one_vm() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("in.txt"), "hello").unwrap();
+
+        let sandbox = AppleContainer::new("debian:bookworm-slim");
+        let terminals = Terminals::default();
+
+        let plan = sandbox.terminal("", workspace.path()).await.unwrap();
+        let id = terminals.open(plan, workspace.path(), 24, 80).unwrap();
+        terminals
+            .read_first(id, Duration::from_secs(30))
+            .await
+            .unwrap();
+
+        // State outside the workspace, and a file inside it.
+        terminals
+            .send(id, &parse_keys("echo kept > /opt/marker; tr a-z A-Z < in.txt > out.txt; echo done-$((40+2))<Enter>"))
+            .unwrap();
+        let screen = terminals
+            .read(id, Some("done-42"), Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(screen.screen.contains("done-42"), "{}", screen.screen);
+        terminals.close(id).unwrap();
+
+        let pending = sandbox.pending().await.unwrap();
+        assert_eq!(
+            pending,
+            [FileChange::Written("out.txt".into(), b"HELLO".to_vec())]
+        );
+        assert!(!workspace.path().join("out.txt").exists());
+
+        // Bash sees what the terminal left, in the same VM.
+        let result = sandbox
+            .exec(ExecRequest {
+                command: "cat /opt/marker",
+                workspace: workspace.path(),
+                timeout: Duration::from_secs(30),
+            })
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "kept\n");
     }
 }

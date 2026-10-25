@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ToolDef, ToolOutput};
+use crate::sandbox::{Sandbox, host_terminal};
 use crate::terminal::{Snapshot, Terminals, parse_keys};
 
 const DEFAULT_ROWS: u16 = 30;
@@ -13,6 +14,7 @@ const MAX_TIMEOUT_MS: u64 = 120_000;
 
 pub struct TerminalOpenTool {
     terminals: Arc<Terminals>,
+    sandbox: Arc<dyn Sandbox>,
 }
 
 pub struct TerminalSendTool {
@@ -25,11 +27,13 @@ pub struct TerminalReadTool {
 
 pub struct TerminalCloseTool {
     terminals: Arc<Terminals>,
+    sandbox: Arc<dyn Sandbox>,
 }
 
 /// The four tools, sharing one set of terminals.
 pub fn tools(
     terminals: Arc<Terminals>,
+    sandbox: Arc<dyn Sandbox>,
 ) -> (
     TerminalOpenTool,
     TerminalSendTool,
@@ -39,6 +43,7 @@ pub fn tools(
     (
         TerminalOpenTool {
             terminals: terminals.clone(),
+            sandbox: sandbox.clone(),
         },
         TerminalSendTool {
             terminals: terminals.clone(),
@@ -46,7 +51,7 @@ pub fn tools(
         TerminalReadTool {
             terminals: terminals.clone(),
         },
-        TerminalCloseTool { terminals },
+        TerminalCloseTool { terminals, sandbox },
     )
 }
 
@@ -98,9 +103,11 @@ impl ToolDef for TerminalOpenTool {
 
     fn description(&self) -> &'static str {
         "Open an interactive terminal: the command runs under a PTY and keeps running between \
-         calls. Use it for programs that need a TTY or keep state: ssh, REPLs, database shells, \
-         `container run -it`, TUIs. Returns the terminal id and the first screen. Use Bash for \
-         one-off commands."
+         calls. Use it for programs that need a TTY or keep state: REPLs, database shells, dev \
+         servers, TUIs. It runs where Bash runs; with a sandbox, its file changes are offered \
+         to the user when the terminal is closed. Set host to run on the user's machine \
+         instead (for ssh to a real server, say); the user must approve it. Returns the \
+         terminal id and the first screen. Use Bash for one-off commands."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -110,6 +117,10 @@ impl ToolDef for TerminalOpenTool {
                 "command": {
                     "type": "string",
                     "description": "Command to run with bash -c. Empty for an interactive bash."
+                },
+                "host": {
+                    "type": "boolean",
+                    "description": "Run on the user's machine, outside the sandbox (default false)"
                 },
                 "rows": { "type": "integer", "description": "Screen height (default 30)" },
                 "cols": { "type": "integer", "description": "Screen width (default 120)" }
@@ -127,8 +138,19 @@ impl ToolDef for TerminalOpenTool {
                 .unwrap_or(default)
         };
 
+        let host = input.get("host").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let plan = if host {
+            host_terminal(command)
+        } else {
+            match self.sandbox.terminal(command, cwd).await {
+                Ok(plan) => plan,
+                Err(e) => return ToolOutput::error(format!("Failed to prepare terminal: {e}")),
+            }
+        };
+
         let id = match self.terminals.open(
-            command,
+            plan,
             cwd,
             size("rows", DEFAULT_ROWS),
             size("cols", DEFAULT_COLS),
@@ -265,9 +287,18 @@ impl ToolDef for TerminalCloseTool {
             Err(e) => return e,
         };
 
-        match self.terminals.close(id) {
-            Ok(snapshot) => ToolOutput::success(format!("Closed. {}", render(id, &snapshot))),
-            Err(e) => ToolOutput::error(format!("Failed to close terminal {id}: {e}")),
+        let snapshot = match self.terminals.close(id) {
+            Ok(snapshot) => snapshot,
+            Err(e) => return ToolOutput::error(format!("Failed to close terminal {id}: {e}")),
+        };
+
+        let output = ToolOutput::success(format!("Closed. {}", render(id, &snapshot)));
+
+        match self.sandbox.pending().await {
+            Ok(changes) => output.with_changes(changes),
+            Err(e) => ToolOutput::error(format!(
+                "Closed terminal {id}, but failed to read the file changes: {e}"
+            )),
         }
     }
 }

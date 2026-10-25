@@ -1,9 +1,8 @@
-//! Command execution capability used by the Bash tool.
+//! Command execution capability used by the Bash and Terminal tools.
 //!
-//! A sandbox runs the command on a copy of the workspace and returns the
-//! files the command changed. The caller decides what to apply.
+//! A sandbox runs commands on a copy of the workspace and reports the files
+//! they changed. The caller decides what to apply and tells the sandbox.
 
-use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -49,6 +48,58 @@ pub trait Sandbox: Send + Sync {
     fn describe(&self) -> Option<String> {
         None
     }
+
+    /// How to start an interactive terminal for `command`. By default it
+    /// runs on the host, in the workspace.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn terminal<'a>(
+        &'a self,
+        command: &'a str,
+        _workspace: &'a Path,
+    ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
+        Box::pin(std::future::ready(Ok(host_terminal(command))))
+    }
+
+    /// Files changed in the sandbox's copy of the workspace and not yet
+    /// accepted or rejected.
+    fn pending(&self) -> BoxFuture<'_, io::Result<Vec<FileChange>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    /// Record the user's decision on `changes`. Accepted changes become the
+    /// copy's new base; rejected ones are undone in the copy.
+    fn settle<'a>(
+        &'a self,
+        _changes: &'a [FileChange],
+        _accepted: bool,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+/// A program to start under a PTY.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TerminalPlan {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Held while the terminal is open. Dropping it tells the sandbox the
+    /// terminal is gone.
+    pub lease: Option<Box<dyn Send + Sync>>,
+}
+
+/// `bash` on the host, interactive when `command` is empty.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn host_terminal(command: &str) -> TerminalPlan {
+    let args = match command.trim() {
+        "" => Vec::new(),
+        _ => vec!["-c".to_string(), command.to_string()],
+    };
+
+    TerminalPlan {
+        program: "bash".to_string(),
+        args,
+        lease: None,
+    }
 }
 
 /// Runs the command with `bash` on the host, in the workspace itself. The
@@ -81,41 +132,8 @@ impl Sandbox for LocalShell {
     }
 }
 
-/// Runs the command in a Linux VM with Apple's `container` CLI (macOS 26+,
-/// Apple Silicon). The VM sees a copy of the workspace at `/workspace`.
-///
-/// By default the VM is on a host-only network: it cannot reach the
-/// internet, but it can reach services that listen on the Mac. With an
-/// allowlist, it reaches the allowed hosts over HTTPS through an
-/// [`EgressProxy`](crate::egress::EgressProxy) on the host.
 #[cfg(target_os = "macos")]
-pub struct AppleContainer {
-    image: String,
-    egress: Egress,
-    offline: tokio::sync::OnceCell<Offline>,
-    proxy: tokio::sync::OnceCell<String>,
-}
-
-#[cfg(target_os = "macos")]
-enum Egress {
-    None,
-    Allowlist(crate::egress::Allowlist),
-    Internet,
-}
-
-/// The host-only network, as `container network inspect` reports it.
-#[cfg(target_os = "macos")]
-struct Offline {
-    gateway: std::net::Ipv4Addr,
-    subnet: crate::egress::Peers,
-}
-
-#[cfg(target_os = "macos")]
-const GUEST_WORKSPACE: &str = "/workspace";
-
-/// The host-only network the VMs join when they have no internet access.
-#[cfg(target_os = "macos")]
-const OFFLINE_NETWORK: &str = "ccrs-offline";
+pub use apple::AppleContainer;
 
 /// Fixed so that a firewall rule can let the VMs reach the proxy and
 /// nothing else on the host.
@@ -123,288 +141,688 @@ const OFFLINE_NETWORK: &str = "ccrs-offline";
 pub const PROXY_PORT: u16 = 3128;
 
 #[cfg(target_os = "macos")]
-impl AppleContainer {
-    pub fn new(image: impl Into<String>) -> Self {
-        Self {
-            image: image.into(),
-            egress: Egress::None,
-            offline: tokio::sync::OnceCell::new(),
-            proxy: tokio::sync::OnceCell::new(),
-        }
+mod apple {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, Weak};
+    use std::time::Instant;
+
+    use super::copy::SharedCopy;
+    use super::*;
+
+    const GUEST_WORKSPACE: &str = "/workspace";
+
+    /// The host-only network the VMs join when they have no internet access.
+    const OFFLINE_NETWORK: &str = "ccrs-offline";
+
+    /// How long the VM may sit unused before it is stopped.
+    const DEFAULT_IDLE: Duration = Duration::from_secs(5 * 60);
+
+    /// Runs commands in one Linux VM per session with Apple's `container` CLI
+    /// (macOS 26+, Apple Silicon). The VM sees a copy of the workspace at
+    /// `/workspace`.
+    ///
+    /// The VM starts on first use and stops after it sits unused, unless a
+    /// terminal is open. A stopped VM keeps its disk: installed packages and
+    /// build caches survive, running processes do not. It is deleted when
+    /// the sandbox is dropped.
+    ///
+    /// By default the VM is on a host-only network: it cannot reach the
+    /// internet, but it can reach services that listen on the Mac. With an
+    /// allowlist, it reaches the allowed hosts over HTTPS through an
+    /// [`EgressProxy`](crate::egress::EgressProxy) on the host.
+    pub struct AppleContainer {
+        image: String,
+        egress: Egress,
+        idle: Duration,
+        offline: tokio::sync::OnceCell<Offline>,
+        proxy: tokio::sync::OnceCell<String>,
+        inner: Arc<Inner>,
     }
 
-    /// Let the VM reach these hosts over HTTPS, and nothing else.
-    pub fn with_allowlist(mut self, allowlist: crate::egress::Allowlist) -> Self {
-        self.egress = Egress::Allowlist(allowlist);
-        self
+    enum Egress {
+        None,
+        Allowlist(crate::egress::Allowlist),
+        Internet,
     }
 
-    /// Put the VM on the default network, with internet access.
-    pub fn with_internet(mut self) -> Self {
-        self.egress = Egress::Internet;
-        self
+    /// The host-only network, as `container network inspect` reports it.
+    struct Offline {
+        gateway: std::net::Ipv4Addr,
+        subnet: crate::egress::Peers,
     }
 
-    /// Arguments for `container run` that set up the network.
-    async fn network_args(&self) -> io::Result<Vec<String>> {
-        let allowlist = match &self.egress {
-            Egress::Internet => return Ok(Vec::new()),
-            Egress::None => None,
-            Egress::Allowlist(allowlist) => Some(allowlist),
-        };
+    /// What the idle reaper shares with the sandbox.
+    struct Inner {
+        vm: tokio::sync::Mutex<Option<Vm>>,
+        /// Commands and terminals running now; the VM is not stopped under them.
+        in_use: AtomicUsize,
+        last_used: Mutex<Instant>,
+    }
 
-        let offline = self.offline.get_or_try_init(offline_network).await?;
+    struct Vm {
+        name: String,
+        copy: SharedCopy,
+        running: bool,
+    }
 
-        let mut args = ["--network", OFFLINE_NETWORK, "--no-dns"]
-            .map(String::from)
-            .to_vec();
+    /// Network arguments for `container create`, and the environment every
+    /// process in the VM gets.
+    struct Network {
+        args: Vec<String>,
+        env: Vec<String>,
+    }
 
-        if let Some(allowlist) = allowlist {
-            let url = self
-                .proxy
-                .get_or_try_init(|| async {
-                    let proxy = crate::egress::EgressProxy::start(
-                        allowlist.clone(),
-                        offline.subnet,
-                        PROXY_PORT,
-                    )
-                    .await?;
-                    io::Result::Ok(format!("http://{}:{}", offline.gateway, proxy.port))
-                })
-                .await?;
-
-            for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-                args.push("--env".to_string());
-                args.push(format!("{var}={url}"));
+    impl AppleContainer {
+        pub fn new(image: impl Into<String>) -> Self {
+            Self {
+                image: image.into(),
+                egress: Egress::None,
+                idle: DEFAULT_IDLE,
+                offline: tokio::sync::OnceCell::new(),
+                proxy: tokio::sync::OnceCell::new(),
+                inner: Arc::new(Inner {
+                    vm: tokio::sync::Mutex::new(None),
+                    in_use: AtomicUsize::new(0),
+                    last_used: Mutex::new(Instant::now()),
+                }),
             }
         }
 
-        Ok(args)
-    }
-}
-
-/// Create the host-only network if it does not exist and read its gateway
-/// and subnet.
-#[cfg(target_os = "macos")]
-async fn offline_network() -> io::Result<Offline> {
-    let mut inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
-
-    if !inspect.status.success() || inspect.stdout.starts_with(b"[]") {
-        let created = container(&["network", "create", "--internal", OFFLINE_NETWORK]).await?;
-
-        if !created.status.success() {
-            return Err(io::Error::other(format!(
-                "failed to create network {OFFLINE_NETWORK}: {}",
-                String::from_utf8_lossy(&created.stderr)
-            )));
+        /// Let the VM reach these hosts over HTTPS, and nothing else.
+        pub fn with_allowlist(mut self, allowlist: crate::egress::Allowlist) -> Self {
+            self.egress = Egress::Allowlist(allowlist);
+            self
         }
 
-        inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
-    }
+        /// Put the VM on the default network, with internet access.
+        pub fn with_internet(mut self) -> Self {
+            self.egress = Egress::Internet;
+            self
+        }
 
-    let report: serde_json::Value = serde_json::from_slice(&inspect.stdout)?;
-    let status = &report[0]["status"];
-    let invalid = || io::Error::other(format!("unexpected network report: {report}"));
+        /// Stop the VM after it sits unused this long (default 5 minutes).
+        pub fn with_idle(mut self, idle: Duration) -> Self {
+            self.idle = idle;
+            self
+        }
 
-    let gateway = status["ipv4Gateway"]
-        .as_str()
-        .and_then(|g| g.parse().ok())
-        .ok_or_else(invalid)?;
-
-    let (network, prefix) = status["ipv4Subnet"]
-        .as_str()
-        .and_then(|s| s.split_once('/'))
-        .ok_or_else(invalid)?;
-
-    Ok(Offline {
-        gateway,
-        subnet: crate::egress::Peers {
-            network: network.parse().map_err(|_| invalid())?,
-            prefix: prefix.parse().map_err(|_| invalid())?,
-        },
-    })
-}
-
-#[cfg(target_os = "macos")]
-async fn container(args: &[&str]) -> io::Result<std::process::Output> {
-    tokio::process::Command::new("container")
-        .args(args)
-        .output()
-        .await
-}
-
-#[cfg(target_os = "macos")]
-impl Sandbox for AppleContainer {
-    fn describe(&self) -> Option<String> {
-        let network = match &self.egress {
-            Egress::None => "It has no network access.".to_string(),
-            Egress::Allowlist(allowlist) => format!(
-                "Its only network access is HTTPS, through a proxy set in HTTPS_PROXY, \
-                 to these hosts: {}. Plain HTTP, other ports, DNS and other hosts fail.",
-                allowlist.patterns().join(", ")
-            ),
-            Egress::Internet => "It has internet access.".to_string(),
-        };
-
-        Some(format!(
-            "Bash commands run in a fresh Linux VM ({image}) on a copy of the workspace, \
-             mounted at {GUEST_WORKSPACE}. Nothing persists between commands except files \
-             in the workspace: installed packages and background processes are gone. {network} \
-             After each command, the user approves or rejects the files it changed; \
-             changes inside .git and to ignored files are discarded.",
-            image = self.image,
-        ))
-    }
-
-    fn exec<'a>(&'a self, request: ExecRequest<'a>) -> BoxFuture<'a, io::Result<ExecResult>> {
-        Box::pin(async move {
-            let copy = tempfile::tempdir()?;
-            let before = snapshot(request.workspace, copy.path())?;
-
-            let name = format!("ccrs-{:016x}", rand::random::<u64>());
-            let network = self.network_args().await?;
-
-            let run = tokio::process::Command::new("container")
-                // The progress bar would end up in the command's stderr.
-                .args(["run", "--rm", "--progress", "none", "--name", &name])
-                .args(network)
-                .arg("--volume")
-                .arg(format!("{}:{GUEST_WORKSPACE}", copy.path().display()))
-                .args(["--workdir", GUEST_WORKSPACE, &self.image])
-                .args(["bash", "-c", request.command])
-                .kill_on_drop(true)
-                .output();
-
-            let output = match tokio::time::timeout(request.timeout, run).await {
-                Ok(output) => output?,
-                Err(_) => {
-                    // Killing the CLI does not stop the VM.
-                    let _ = container(&["rm", "--force", &name]).await;
-                    return Err(io::ErrorKind::TimedOut.into());
+        async fn network(&self) -> io::Result<Network> {
+            let allowlist = match &self.egress {
+                Egress::Internet => {
+                    return Ok(Network {
+                        args: Vec::new(),
+                        env: Vec::new(),
+                    });
                 }
+                Egress::None => None,
+                Egress::Allowlist(allowlist) => Some(allowlist),
             };
 
-            let after = read_tree(copy.path())?;
+            let offline = self.offline.get_or_try_init(offline_network).await?;
+            let args = ["--network", OFFLINE_NETWORK, "--no-dns"]
+                .map(String::from)
+                .to_vec();
+            let mut env = Vec::new();
 
-            Ok(ExecResult {
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.status.code(),
-                changes: diff(before, after),
-            })
+            if let Some(allowlist) = allowlist {
+                let url = self
+                    .proxy
+                    .get_or_try_init(|| async {
+                        let proxy = crate::egress::EgressProxy::start(
+                            allowlist.clone(),
+                            offline.subnet,
+                            PROXY_PORT,
+                        )
+                        .await?;
+                        io::Result::Ok(format!("http://{}:{}", offline.gateway, proxy.port))
+                    })
+                    .await?;
+
+                for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                    env.push(format!("{var}={url}"));
+                }
+            }
+
+            Ok(Network { args, env })
+        }
+
+        /// Create or start the VM, bring the host's file changes into its
+        /// copy, and return the VM name and the environment for `exec`.
+        async fn ready(&self, workspace: &Path) -> io::Result<(String, Vec<String>)> {
+            let network = self.network().await?;
+            let mut vm = self.inner.vm.lock().await;
+
+            if vm.is_none() {
+                let copy = SharedCopy::new(workspace)?;
+                let name = format!("ccrs-{:016x}", rand::random::<u64>());
+
+                let mut args = ["create", "--name", &name].map(String::from).to_vec();
+                args.extend(network.args.iter().cloned());
+                for var in &network.env {
+                    args.extend(["--env".to_string(), var.clone()]);
+                }
+                args.push("--volume".to_string());
+                args.push(format!("{}:{GUEST_WORKSPACE}", copy.path().display()));
+                // The init process only keeps the VM up; commands come in
+                // with `exec`.
+                args.extend(
+                    [
+                        "--workdir",
+                        GUEST_WORKSPACE,
+                        &self.image,
+                        "sleep",
+                        "infinity",
+                    ]
+                    .map(String::from),
+                );
+
+                check(container(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?)?;
+
+                *vm = Some(Vm {
+                    name,
+                    copy,
+                    running: false,
+                });
+
+                spawn_reaper(Arc::downgrade(&self.inner), self.idle);
+            }
+
+            let vm = vm.as_mut().unwrap();
+
+            if !vm.running {
+                check(container(&["start", &vm.name]).await?)?;
+                vm.running = true;
+            }
+
+            vm.copy.sync_from(workspace)?;
+            self.inner.touch();
+
+            Ok((vm.name.clone(), network.env))
+        }
+
+        #[cfg(test)]
+        pub(super) async fn vm_name(&self) -> Option<String> {
+            self.inner
+                .vm
+                .lock()
+                .await
+                .as_ref()
+                .map(|vm| vm.name.clone())
+        }
+
+        fn exec_args(name: &str, env: &[String], tty: bool) -> Vec<String> {
+            let mut args = vec!["exec".to_string()];
+
+            if tty {
+                args.push("-it".to_string());
+            }
+
+            for var in env {
+                args.extend(["--env".to_string(), var.clone()]);
+            }
+
+            args.extend(["--workdir", GUEST_WORKSPACE, name, "bash"].map(String::from));
+            args
+        }
+    }
+
+    impl Inner {
+        fn touch(&self) {
+            *self.last_used.lock().unwrap() = Instant::now();
+        }
+    }
+
+    impl Drop for Inner {
+        fn drop(&mut self) {
+            if let Some(vm) = self.vm.get_mut() {
+                let _ = std::process::Command::new("container")
+                    .args(["rm", "--force", &vm.name])
+                    .output();
+            }
+        }
+    }
+
+    /// Stops the VM once it sits unused for `idle` with nothing running.
+    /// Ends when the sandbox is dropped.
+    fn spawn_reaper(inner: Weak<Inner>, idle: Duration) {
+        let tick = (idle / 10).clamp(Duration::from_millis(100), Duration::from_secs(30));
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tick).await;
+
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+
+                let unused = || {
+                    inner.last_used.lock().unwrap().elapsed() >= idle
+                        && inner.in_use.load(Ordering::SeqCst) == 0
+                };
+
+                if !unused() {
+                    continue;
+                }
+
+                let mut vm = inner.vm.lock().await;
+
+                // A command may have started the VM while this task waited
+                // for the lock.
+                if !unused() {
+                    continue;
+                }
+
+                if let Some(vm) = vm.as_mut().filter(|vm| vm.running) {
+                    // The init process ignores SIGTERM, so `stop` would wait
+                    // for its timeout.
+                    let _ = container(&["kill", &vm.name]).await;
+                    vm.running = false;
+                }
+            }
+        });
+    }
+
+    /// Counts a running command or an open terminal; dropping it marks the
+    /// VM as used.
+    struct Lease(Arc<Inner>);
+
+    impl Lease {
+        fn new(inner: &Arc<Inner>) -> Self {
+            inner.in_use.fetch_add(1, Ordering::SeqCst);
+            Self(inner.clone())
+        }
+    }
+
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.in_use.fetch_sub(1, Ordering::SeqCst);
+            self.0.touch();
+        }
+    }
+
+    /// Create the host-only network if it does not exist and read its
+    /// gateway and subnet.
+    async fn offline_network() -> io::Result<Offline> {
+        let mut inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
+
+        if !inspect.status.success() || inspect.stdout.starts_with(b"[]") {
+            let created = container(&["network", "create", "--internal", OFFLINE_NETWORK]).await?;
+
+            if !created.status.success() {
+                return Err(io::Error::other(format!(
+                    "failed to create network {OFFLINE_NETWORK}: {}",
+                    String::from_utf8_lossy(&created.stderr)
+                )));
+            }
+
+            inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
+        }
+
+        let report: serde_json::Value = serde_json::from_slice(&inspect.stdout)?;
+        let status = &report[0]["status"];
+        let invalid = || io::Error::other(format!("unexpected network report: {report}"));
+
+        let gateway = status["ipv4Gateway"]
+            .as_str()
+            .and_then(|g| g.parse().ok())
+            .ok_or_else(invalid)?;
+
+        let (network, prefix) = status["ipv4Subnet"]
+            .as_str()
+            .and_then(|s| s.split_once('/'))
+            .ok_or_else(invalid)?;
+
+        Ok(Offline {
+            gateway,
+            subnet: crate::egress::Peers {
+                network: network.parse().map_err(|_| invalid())?,
+                prefix: prefix.parse().map_err(|_| invalid())?,
+            },
         })
     }
-}
 
-// The helpers below serve the container sandboxes only: LocalShell works in
-// place and has no snapshot to take.
+    async fn container(args: &[&str]) -> io::Result<std::process::Output> {
+        tokio::process::Command::new("container")
+            .args(args)
+            .output()
+            .await
+    }
 
-/// File contents by path relative to the root. `.git` and files that
-/// `.gitignore` excludes are left out.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-type Tree = BTreeMap<PathBuf, Vec<u8>>;
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn read_tree(root: &Path) -> io::Result<Tree> {
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .require_git(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .build();
-
-    let mut tree = Tree::new();
-
-    for entry in walker {
-        let entry = entry.map_err(io::Error::other)?;
-
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
+    fn check(output: std::process::Output) -> io::Result<()> {
+        if output.status.success() {
+            return Ok(());
         }
 
-        let relative = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(io::Error::other)?
-            .to_path_buf();
-
-        tree.insert(relative, std::fs::read(entry.path())?);
+        Err(io::Error::other(format!(
+            "container: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
     }
 
-    Ok(tree)
-}
+    impl Sandbox for AppleContainer {
+        fn describe(&self) -> Option<String> {
+            let network = match &self.egress {
+                Egress::None => "It has no network access.".to_string(),
+                Egress::Allowlist(allowlist) => format!(
+                    "Its only network access is HTTPS, through a proxy set in HTTPS_PROXY, \
+                     to these hosts: {}. Plain HTTP, other ports, DNS and other hosts fail.",
+                    allowlist.patterns().join(", ")
+                ),
+                Egress::Internet => "It has internet access.".to_string(),
+            };
 
-/// Copy the workspace to `target` and return what was copied. `.git` is
-/// copied too, so git commands work, but its changes are never reported.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn snapshot(workspace: &Path, target: &Path) -> io::Result<Tree> {
-    let tree = read_tree(workspace)?;
-
-    for (relative, contents) in &tree {
-        let path = target.join(relative);
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            Some(format!(
+                "Bash commands and terminals run in one Linux VM ({image}) for this session, \
+                 on a copy of the workspace mounted at {GUEST_WORKSPACE}. The VM keeps its \
+                 disk between commands: installed packages and build caches stay. After \
+                 {idle} minutes unused it is stopped: running processes end, files stay. \
+                 {network} After each command, and when a terminal is closed, the user \
+                 approves or rejects the files that changed; changes inside .git and to \
+                 ignored files are never applied.",
+                image = self.image,
+                idle = self.idle.as_secs().div_ceil(60),
+            ))
         }
 
-        std::fs::write(&path, contents)?;
-        std::fs::set_permissions(
-            &path,
-            std::fs::metadata(workspace.join(relative))?.permissions(),
-        )?;
+        fn terminal<'a>(
+            &'a self,
+            command: &'a str,
+            workspace: &'a Path,
+        ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
+            Box::pin(async move {
+                let lease = Lease::new(&self.inner);
+                let (name, env) = self.ready(workspace).await?;
+                let mut args = Self::exec_args(&name, &env, true);
+
+                if !command.trim().is_empty() {
+                    args.extend(["-c".to_string(), command.to_string()]);
+                }
+
+                Ok(TerminalPlan {
+                    program: "container".to_string(),
+                    args,
+                    lease: Some(Box::new(lease)),
+                })
+            })
+        }
+
+        fn exec<'a>(&'a self, request: ExecRequest<'a>) -> BoxFuture<'a, io::Result<ExecResult>> {
+            Box::pin(async move {
+                let lease = Lease::new(&self.inner);
+                let (name, env) = self.ready(request.workspace).await?;
+                let mut args = Self::exec_args(&name, &env, false);
+                args.extend(["-c".to_string(), request.command.to_string()]);
+
+                let run = tokio::process::Command::new("container")
+                    .args(&args)
+                    .kill_on_drop(true)
+                    .output();
+
+                let output = match tokio::time::timeout(request.timeout, run).await {
+                    Ok(output) => output?,
+                    Err(_) => {
+                        // Killing `exec` leaves the command running in the
+                        // VM; stopping the VM ends it and keeps the disk.
+                        let mut vm = self.inner.vm.lock().await;
+                        if let Some(vm) = vm.as_mut() {
+                            let _ = container(&["kill", &vm.name]).await;
+                            vm.running = false;
+                        }
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                };
+
+                drop(lease);
+
+                Ok(ExecResult {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_code: output.status.code(),
+                    changes: self.pending().await?,
+                })
+            })
+        }
+
+        fn pending(&self) -> BoxFuture<'_, io::Result<Vec<FileChange>>> {
+            Box::pin(async move {
+                match self.inner.vm.lock().await.as_ref() {
+                    Some(vm) => vm.copy.pending(),
+                    None => Ok(Vec::new()),
+                }
+            })
+        }
+
+        fn settle<'a>(
+            &'a self,
+            changes: &'a [FileChange],
+            accepted: bool,
+        ) -> BoxFuture<'a, io::Result<()>> {
+            Box::pin(async move {
+                match self.inner.vm.lock().await.as_mut() {
+                    Some(vm) => vm.copy.settle(changes, accepted),
+                    None => Ok(()),
+                }
+            })
+        }
     }
-
-    let git = workspace.join(".git");
-
-    if git.is_dir() {
-        copy_dir(&git, &target.join(".git"))?;
-    }
-
-    Ok(tree)
 }
 
+// The copy helpers serve the container sandboxes; LocalShell works in place.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(to)?;
+mod copy {
+    use std::collections::BTreeMap;
+    use std::io;
+    use std::path::{Path, PathBuf};
 
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let target = to.join(entry.file_name());
+    use super::FileChange;
 
-        if file_type.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else if file_type.is_file() {
-            std::fs::copy(entry.path(), target)?;
+    /// File contents by path relative to the root. `.git` and files that
+    /// `.gitignore` excludes are left out.
+    pub(super) type Tree = BTreeMap<PathBuf, Vec<u8>>;
+
+    /// A copy of the workspace that lives as long as the sandbox, and the
+    /// contents both sides agree on.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) struct SharedCopy {
+        dir: tempfile::TempDir,
+        accepted: Tree,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl SharedCopy {
+        pub(super) fn new(workspace: &Path) -> io::Result<Self> {
+            let dir = tempfile::tempdir()?;
+            let accepted = snapshot(workspace, dir.path())?;
+
+            Ok(Self { dir, accepted })
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            self.dir.path()
+        }
+
+        /// Bring files the host changed since the last sync into the copy.
+        /// A file the sandbox also changed keeps the sandbox's version; its
+        /// base becomes the host's, so the pending change shows against it.
+        pub(super) fn sync_from(&mut self, workspace: &Path) -> io::Result<()> {
+            let host = read_tree(workspace)?;
+            let copy = read_tree(self.dir.path())?;
+
+            for change in diff(self.accepted.clone(), host) {
+                let path = change.path().to_path_buf();
+                let untouched = copy.get(&path) == self.accepted.get(&path);
+
+                if untouched {
+                    apply(self.dir.path(), &change)?;
+                }
+
+                record(&mut self.accepted, change);
+            }
+
+            Ok(())
+        }
+
+        /// Changes in the copy that are not yet accepted or rejected.
+        pub(super) fn pending(&self) -> io::Result<Vec<FileChange>> {
+            Ok(diff(self.accepted.clone(), read_tree(self.dir.path())?))
+        }
+
+        pub(super) fn settle(&mut self, changes: &[FileChange], accepted: bool) -> io::Result<()> {
+            for change in changes {
+                if accepted {
+                    record(&mut self.accepted, clone(change));
+                    continue;
+                }
+
+                // Put back what the base holds for this path.
+                let path = change.path();
+                let undo = match self.accepted.get(path) {
+                    Some(contents) => FileChange::Written(path.to_path_buf(), contents.clone()),
+                    None => FileChange::Deleted(path.to_path_buf()),
+                };
+                apply(self.dir.path(), &undo)?;
+            }
+
+            Ok(())
         }
     }
 
-    Ok(())
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn diff(before: Tree, mut after: Tree) -> Vec<FileChange> {
-    let mut changes = Vec::new();
-
-    for (path, contents) in before {
-        match after.remove(&path) {
-            Some(new) if new != contents => changes.push(FileChange::Written(path, new)),
-            Some(_) => {}
-            None => changes.push(FileChange::Deleted(path)),
+    fn clone(change: &FileChange) -> FileChange {
+        match change {
+            FileChange::Written(path, contents) => {
+                FileChange::Written(path.clone(), contents.clone())
+            }
+            FileChange::Deleted(path) => FileChange::Deleted(path.clone()),
         }
     }
 
-    changes.extend(
-        after
-            .into_iter()
-            .map(|(path, contents)| FileChange::Written(path, contents)),
-    );
-    changes.sort_by(|a, b| a.path().cmp(b.path()));
+    fn record(tree: &mut Tree, change: FileChange) {
+        match change {
+            FileChange::Written(path, contents) => {
+                tree.insert(path, contents);
+            }
+            FileChange::Deleted(path) => {
+                tree.remove(&path);
+            }
+        }
+    }
 
-    changes
+    fn apply(root: &Path, change: &FileChange) -> io::Result<()> {
+        let target = root.join(change.path());
+
+        match change {
+            FileChange::Written(_, contents) => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(target, contents)
+            }
+            FileChange::Deleted(_) => match std::fs::remove_file(target) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            },
+        }
+    }
+
+    pub(super) fn read_tree(root: &Path) -> io::Result<Tree> {
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(|entry| entry.file_name() != ".git")
+            .build();
+
+        let mut tree = Tree::new();
+
+        for entry in walker {
+            let entry = entry.map_err(io::Error::other)?;
+
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(io::Error::other)?
+                .to_path_buf();
+
+            tree.insert(relative, std::fs::read(entry.path())?);
+        }
+
+        Ok(tree)
+    }
+
+    /// Copy the workspace to `target` and return what was copied. `.git` is
+    /// copied too, so git commands work, but its changes are never reported.
+    pub(super) fn snapshot(workspace: &Path, target: &Path) -> io::Result<Tree> {
+        let tree = read_tree(workspace)?;
+
+        for (relative, contents) in &tree {
+            let path = target.join(relative);
+
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::write(&path, contents)?;
+            std::fs::set_permissions(
+                &path,
+                std::fs::metadata(workspace.join(relative))?.permissions(),
+            )?;
+        }
+
+        let git = workspace.join(".git");
+
+        if git.is_dir() {
+            copy_dir(&git, &target.join(".git"))?;
+        }
+
+        Ok(tree)
+    }
+
+    fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(to)?;
+
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let target = to.join(entry.file_name());
+
+            if file_type.is_dir() {
+                copy_dir(&entry.path(), &target)?;
+            } else if file_type.is_file() {
+                std::fs::copy(entry.path(), target)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn diff(before: Tree, mut after: Tree) -> Vec<FileChange> {
+        let mut changes = Vec::new();
+
+        for (path, contents) in before {
+            match after.remove(&path) {
+                Some(new) if new != contents => changes.push(FileChange::Written(path, new)),
+                Some(_) => {}
+                None => changes.push(FileChange::Deleted(path)),
+            }
+        }
+
+        changes.extend(
+            after
+                .into_iter()
+                .map(|(path, contents)| FileChange::Written(path, contents)),
+        );
+        changes.sort_by(|a, b| a.path().cmp(b.path()));
+
+        changes
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::copy::*;
     use super::*;
 
     #[test]
@@ -447,6 +865,59 @@ mod tests {
             [Path::new(".gitignore"), Path::new("main.rs")]
         );
         assert!(!copy.path().join("target").exists());
+    }
+
+    fn write(root: &Path, name: &str, contents: &str) {
+        std::fs::write(root.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn shared_copy_settles_and_syncs() {
+        let host = tempfile::tempdir().unwrap();
+        write(host.path(), "a.txt", "a");
+        write(host.path(), "b.txt", "b");
+
+        let mut copy = SharedCopy::new(host.path()).unwrap();
+        assert!(copy.pending().unwrap().is_empty());
+
+        // The sandbox changes two files; the user takes one, rejects the other.
+        write(copy.path(), "a.txt", "a2");
+        write(copy.path(), "b.txt", "b2");
+        let pending = copy.pending().unwrap();
+        assert_eq!(pending.len(), 2);
+
+        copy.settle(&pending[..1], true).unwrap();
+        copy.settle(&pending[1..], false).unwrap();
+        assert!(copy.pending().unwrap().is_empty());
+        assert_eq!(std::fs::read(copy.path().join("b.txt")).unwrap(), b"b");
+
+        // The host applies the accepted change and edits another file.
+        write(host.path(), "a.txt", "a2");
+        write(host.path(), "c.txt", "c");
+        copy.sync_from(host.path()).unwrap();
+
+        assert!(copy.pending().unwrap().is_empty());
+        assert_eq!(std::fs::read(copy.path().join("c.txt")).unwrap(), b"c");
+    }
+
+    #[test]
+    fn shared_copy_keeps_the_sandbox_side_of_a_conflict() {
+        let host = tempfile::tempdir().unwrap();
+        write(host.path(), "a.txt", "base");
+
+        let mut copy = SharedCopy::new(host.path()).unwrap();
+        write(copy.path(), "a.txt", "sandbox");
+        write(host.path(), "a.txt", "host");
+        copy.sync_from(host.path()).unwrap();
+
+        // The pending change now reads against the host's version.
+        assert_eq!(
+            copy.pending().unwrap(),
+            [FileChange::Written("a.txt".into(), b"sandbox".to_vec())]
+        );
+
+        copy.settle(&copy.pending().unwrap(), false).unwrap();
+        assert_eq!(std::fs::read(copy.path().join("a.txt")).unwrap(), b"host");
     }
 }
 
@@ -529,6 +1000,40 @@ mod container_tests {
                 String::from_utf8_lossy(&result.stderr)
             );
         }
+    }
+
+    /// Needs `container system start` and pulls `debian:bookworm-slim`.
+    #[tokio::test]
+    #[ignore]
+    async fn apple_container_scales_to_zero_and_keeps_its_disk() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = AppleContainer::new("debian:bookworm-slim").with_idle(Duration::from_secs(1));
+
+        let run = |command: &'static str| {
+            sandbox.exec(ExecRequest {
+                command,
+                workspace: workspace.path(),
+                timeout: Duration::from_secs(60),
+            })
+        };
+
+        run("echo installed > /opt/marker").await.unwrap();
+        let name = sandbox.vm_name().await.unwrap();
+
+        let running = || {
+            let list = std::process::Command::new("container")
+                .arg("list")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&list.stdout).contains(&name)
+        };
+        assert!(running());
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!running(), "the VM should be stopped after 1 s unused");
+
+        let result = run("cat /opt/marker").await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "installed\n");
     }
 
     /// Needs `container system start` and pulls `debian:bookworm-slim`.

@@ -12,7 +12,7 @@ use crate::fs::Fs;
 use crate::history::{self, StoredSession};
 use crate::permission::{AllowAll, PermissionHandler, Tool};
 use crate::provider::Provider;
-use crate::sandbox::FileChange;
+use crate::sandbox::{FileChange, Sandbox};
 use crate::tools::{self, ToolRegistry};
 
 /// What one [`Session::send_message`] turn consumed.
@@ -34,6 +34,8 @@ pub struct Session<P: PermissionHandler> {
     tools: ToolRegistry,
     /// Writes the changes of sandboxed commands to the workspace.
     fs: Arc<dyn Fs>,
+    /// Told whether the user accepted those changes.
+    sandbox: Arc<dyn Sandbox>,
     id: String,
     /// Conversation size after the last completed turn, in tokens.
     context_used: u64,
@@ -119,7 +121,7 @@ impl SessionBuilder {
              - When executing commands, use the working directory as the base for relative paths.{sandbox_note}",
             cwd = cwd.display(),
             terminal_tool_line = if cfg!(not(target_arch = "wasm32")) {
-                "\n             - **TerminalOpen/Send/Read/Close**: Interactive terminals that keep running between calls (ssh, REPLs, `container run -it`). They run on the host, outside the Bash sandbox."
+                "\n             - **TerminalOpen/Send/Read/Close**: Interactive terminals that keep running between calls (REPLs, dev servers, TUIs). They run where Bash runs; `host: true` runs one on the user's machine."
             } else {
                 ""
             },
@@ -158,6 +160,7 @@ impl SessionBuilder {
             system_prompt,
             tools: tools::default_registry(&caps),
             fs: caps.fs.clone(),
+            sandbox: caps.sandbox.clone(),
             id: history::new_id(),
             context_used: 0,
         })
@@ -380,7 +383,11 @@ impl<P: PermissionHandler> Session<P> {
                 };
 
                 if !output.changes.is_empty() {
-                    let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                    let origin = format!("{name} {input}");
+                    let command = input
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or(&origin);
                     let note = self.apply_changes(command, &output.changes).await;
                     output.content.push_str(&note);
                 }
@@ -404,10 +411,20 @@ impl<P: PermissionHandler> Session<P> {
     /// Ask for permission to write a sandboxed command's changes to the
     /// workspace, and write them. Returns a note for the model.
     async fn apply_changes(&mut self, command: &str, changes: &[FileChange]) -> String {
-        if !self.permissions.allow(&Tool::ApplyChanges { command, changes }) {
-            return "\n\nThe user rejected the file changes of this command. \
-                    The workspace is unchanged."
+        let accepted = self.permissions.allow(&Tool::ApplyChanges { command, changes });
+
+        // The sandbox's copy must match what the workspace gets: rejected
+        // changes are undone there too.
+        let settled = self.sandbox.settle(changes, accepted).await;
+
+        if !accepted {
+            let mut note = "\n\nThe user rejected the file changes of this command. \
+                            The workspace is unchanged, and the changes were undone in the sandbox."
                 .to_string();
+            if let Err(e) = settled {
+                write!(note, " Undoing them in the sandbox failed: {e}").unwrap();
+            }
+            return note;
         }
 
         let mut note = String::from("\n\nChanged files, applied to the workspace:\n");

@@ -173,7 +173,7 @@ pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let terminals = std::sync::Arc::new(crate::terminal::Terminals::default());
-        let (open, send, read, close) = terminal::tools(terminals);
+        let (open, send, read, close) = terminal::tools(terminals, caps.sandbox.clone());
         r.register(open);
         r.register(send);
         r.register(read);
@@ -254,7 +254,8 @@ pub fn to_permission_tool<'a>(
         "Search" => Some(permission::Tool::Search),
         "TerminalOpen" => {
             let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
-            Some(permission::Tool::TerminalOpen { command })
+            let host = input.get("host").and_then(|h| h.as_bool()).unwrap_or(false);
+            Some(permission::Tool::TerminalOpen { command, host })
         }
         "TerminalSend" => {
             let keys = input.get("input").and_then(|c| c.as_str()).unwrap_or("");
