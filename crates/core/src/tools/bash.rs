@@ -1,47 +1,18 @@
-use std::fmt::Write;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ToolDef, ToolOutput};
-use crate::fs::Fs;
-use crate::sandbox::{ExecRequest, FileChange, Sandbox};
+use crate::sandbox::{ExecRequest, Sandbox};
 
 pub struct BashTool {
     sandbox: Arc<dyn Sandbox>,
-    fs: Arc<dyn Fs>,
 }
 
 impl BashTool {
-    pub fn new(sandbox: Arc<dyn Sandbox>, fs: Arc<dyn Fs>) -> Self {
-        Self { sandbox, fs }
-    }
-
-    /// Write the sandbox's changes back to the workspace and list them.
-    async fn apply(&self, cwd: &Path, changes: &[FileChange]) -> io::Result<String> {
-        let mut summary = String::new();
-
-        for change in changes {
-            match change {
-                FileChange::Written(path, contents) => {
-                    let target = cwd.join(path);
-
-                    if let Some(parent) = target.parent() {
-                        self.fs.create_dir_all(parent).await?;
-                    }
-
-                    self.fs.write(&target, contents).await?;
-                    writeln!(summary, "  wrote {}", path.display()).unwrap();
-                }
-                FileChange::Deleted(path) => {
-                    self.fs.remove_file(&cwd.join(path)).await?;
-                    writeln!(summary, "  deleted {}", path.display()).unwrap();
-                }
-            }
-        }
-
-        Ok(summary)
+    pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
+        Self { sandbox }
     }
 }
 
@@ -121,34 +92,18 @@ impl ToolDef for BashTool {
             content.push_str(&stderr);
         }
 
-        if !output.changes.is_empty() {
-            match self.apply(cwd, &output.changes).await {
-                Ok(summary) => {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-
-                    content.push_str("changed files:\n");
-                    content.push_str(&summary);
-                }
-                Err(e) => {
-                    return ToolOutput::error(format!(
-                        "{content}\nFailed to apply the command's file changes: {e}"
-                    ));
-                }
-            }
-        }
-
         if content.is_empty() {
             content.push_str("(no output)");
         }
 
-        match output.exit_code {
+        let result = match output.exit_code {
             Some(0) => ToolOutput::success(content),
             code => {
                 let code = code.unwrap_or(-1);
                 ToolOutput::error(format!("Exit code {code}\n{content}"))
             }
-        }
+        };
+
+        result.with_changes(output.changes)
     }
 }

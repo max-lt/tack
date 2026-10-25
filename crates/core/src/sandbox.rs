@@ -31,9 +31,24 @@ pub enum FileChange {
     Deleted(PathBuf),
 }
 
+impl FileChange {
+    /// The path, relative to the workspace.
+    pub fn path(&self) -> &Path {
+        match self {
+            FileChange::Written(path, _) | FileChange::Deleted(path) => path,
+        }
+    }
+}
+
 /// A timeout gives an `io::ErrorKind::TimedOut` error.
 pub trait Sandbox: Send + Sync {
     fn exec<'a>(&'a self, request: ExecRequest<'a>) -> BoxFuture<'a, io::Result<ExecResult>>;
+
+    /// What the model must know about where its commands run. `None` when
+    /// they run on the host, in the workspace.
+    fn describe(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Runs the command with `bash` on the host, in the workspace itself. The
@@ -220,6 +235,27 @@ async fn container(args: &[&str]) -> io::Result<std::process::Output> {
 
 #[cfg(target_os = "macos")]
 impl Sandbox for AppleContainer {
+    fn describe(&self) -> Option<String> {
+        let network = match &self.egress {
+            Egress::None => "It has no network access.".to_string(),
+            Egress::Allowlist(allowlist) => format!(
+                "Its only network access is HTTPS, through a proxy set in HTTPS_PROXY, \
+                 to these hosts: {}. Plain HTTP, other ports, DNS and other hosts fail.",
+                allowlist.patterns().join(", ")
+            ),
+            Egress::Internet => "It has internet access.".to_string(),
+        };
+
+        Some(format!(
+            "Bash commands run in a fresh Linux VM ({image}) on a copy of the workspace, \
+             mounted at {GUEST_WORKSPACE}. Nothing persists between commands except files \
+             in the workspace: installed packages and background processes are gone. {network} \
+             After each command, the user approves or rejects the files it changed; \
+             changes inside .git and to ignored files are discarded.",
+            image = self.image,
+        ))
+    }
+
     fn exec<'a>(&'a self, request: ExecRequest<'a>) -> BoxFuture<'a, io::Result<ExecResult>> {
         Box::pin(async move {
             let copy = tempfile::tempdir()?;
@@ -229,7 +265,8 @@ impl Sandbox for AppleContainer {
             let network = self.network_args().await?;
 
             let run = tokio::process::Command::new("container")
-                .args(["run", "--rm", "--name", &name])
+                // The progress bar would end up in the command's stderr.
+                .args(["run", "--rm", "--progress", "none", "--name", &name])
                 .args(network)
                 .arg("--volume")
                 .arg(format!("{}:{GUEST_WORKSPACE}", copy.path().display()))
@@ -361,16 +398,9 @@ fn diff(before: Tree, mut after: Tree) -> Vec<FileChange> {
             .into_iter()
             .map(|(path, contents)| FileChange::Written(path, contents)),
     );
-    changes.sort_by(|a, b| change_path(a).cmp(change_path(b)));
+    changes.sort_by(|a, b| a.path().cmp(b.path()));
 
     changes
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn change_path(change: &FileChange) -> &Path {
-    match change {
-        FileChange::Written(path, _) | FileChange::Deleted(path) => path,
-    }
 }
 
 #[cfg(test)]

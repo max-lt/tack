@@ -18,6 +18,7 @@ use std::pin::Pin;
 
 use crate::capabilities::Capabilities;
 use crate::permission;
+use crate::sandbox::FileChange;
 
 // ---------------------------------------------------------------------------
 // Tool output
@@ -26,6 +27,9 @@ use crate::permission;
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    /// Files a sandboxed command changed. The session asks for permission
+    /// before it writes them to the workspace.
+    pub changes: Vec<FileChange>,
 }
 
 impl ToolOutput {
@@ -33,6 +37,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            changes: Vec::new(),
         }
     }
 
@@ -40,7 +45,13 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            changes: Vec::new(),
         }
+    }
+
+    pub fn with_changes(mut self, changes: Vec<FileChange>) -> Self {
+        self.changes = changes;
+        self
     }
 }
 
@@ -147,7 +158,7 @@ pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
 
     // Bash needs a real OS: a wasm guest has no processes to spawn.
     #[cfg(not(target_arch = "wasm32"))]
-    r.register(bash::BashTool::new(caps.sandbox.clone(), caps.fs.clone()));
+    r.register(bash::BashTool::new(caps.sandbox.clone()));
 
     r.register(read::ReadTool::new(caps.fs.clone()));
     r.register(write::WriteTool::new(caps.fs.clone()));

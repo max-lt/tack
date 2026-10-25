@@ -2,10 +2,17 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::sandbox::FileChange;
+
 /// Describes a tool invocation that requires permission.
 #[non_exhaustive]
 pub enum Tool<'a> {
     Bash { command: &'a str },
+    /// Apply the files a sandboxed command changed to the workspace.
+    ApplyChanges {
+        command: &'a str,
+        changes: &'a [FileChange],
+    },
     Read { path: &'a Path },
     Write { path: &'a Path },
     Edit { path: &'a Path },
@@ -84,6 +91,18 @@ impl PermissionConfig {
         // Deny rules take precedence
         if self.deny.iter().any(|r| rule_matches(r, tool)) {
             return Some(false);
+        }
+
+        // Changes from a sandbox are a set of writes: a deny rule on any of
+        // them refuses the set. No rule allows them without asking.
+        if let Tool::ApplyChanges { changes, .. } = tool {
+            let denied = changes.iter().any(|change| {
+                let path = change.path();
+                let write = Tool::Write { path };
+                self.deny.iter().any(|r| rule_matches(r, &write))
+            });
+
+            return denied.then_some(false);
         }
 
         // Check explicit allow rules
@@ -448,5 +467,30 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn sandbox_changes_always_prompt_unless_denied() {
+        let config = PermissionConfig {
+            allow: vec!["Write(*)".to_string()],
+            deny: vec!["Write(.env)".to_string()],
+            additional_directories: Vec::new(),
+        };
+        let project = Path::new("/p");
+
+        let safe = [FileChange::Written("src/main.rs".into(), Vec::new())];
+        let secret = [
+            FileChange::Written("src/main.rs".into(), Vec::new()),
+            FileChange::Deleted(".env".into()),
+        ];
+
+        let apply = |changes| Tool::ApplyChanges {
+            command: "make",
+            changes,
+        };
+
+        // Even with Write(*) allowed, the user sees the set.
+        assert_eq!(config.check(&apply(&safe), project), None);
+        assert_eq!(config.check(&apply(&secret), project), Some(false));
     }
 }

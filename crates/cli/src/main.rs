@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 use claude_code_core::capabilities::Capabilities;
+#[cfg(target_os = "macos")]
+use claude_code_core::egress::Allowlist;
 use claude_code_core::config::{Credentials, TokenType};
 use claude_code_core::history::{self, StoredSession};
 #[cfg(target_os = "macos")]
@@ -47,6 +49,11 @@ struct Cli {
     #[cfg(target_os = "macos")]
     #[arg(long, value_name = "IMAGE")]
     sandbox: Option<String>,
+
+    /// Hosts the sandbox may reach over HTTPS (e.g. crates.io,*.crates.io)
+    #[cfg(target_os = "macos")]
+    #[arg(long, value_name = "HOSTS", value_delimiter = ',', requires = "sandbox")]
+    sandbox_allow: Vec<String>,
 }
 
 async fn login() -> Result<Credentials> {
@@ -136,7 +143,13 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     if let Some(image) = cli.sandbox.clone() {
         let mut caps = Capabilities::local();
-        caps.sandbox = Arc::new(AppleContainer::new(image));
+        let mut sandbox = AppleContainer::new(image);
+
+        if !cli.sandbox_allow.is_empty() {
+            sandbox = sandbox.with_allowlist(Allowlist::new(cli.sandbox_allow.clone()));
+        }
+
+        caps.sandbox = Arc::new(sandbox);
         builder = builder.capabilities(caps);
     }
 

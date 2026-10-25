@@ -1,4 +1,6 @@
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
@@ -6,9 +8,11 @@ use tokio_util::sync::CancellationToken;
 use crate::api::{ApiClient, Content, ContentBlock, DEFAULT_MODEL, Message, StopReason, Usage};
 use crate::capabilities::Capabilities;
 use crate::event::EventHandler;
+use crate::fs::Fs;
 use crate::history::{self, StoredSession};
-use crate::permission::{AllowAll, PermissionHandler};
+use crate::permission::{AllowAll, PermissionHandler, Tool};
 use crate::provider::Provider;
+use crate::sandbox::FileChange;
 use crate::tools::{self, ToolRegistry};
 
 /// What one [`Session::send_message`] turn consumed.
@@ -28,6 +32,8 @@ pub struct Session<P: PermissionHandler> {
     bootstrap_len: usize,
     system_prompt: String,
     tools: ToolRegistry,
+    /// Writes the changes of sandboxed commands to the workspace.
+    fs: Arc<dyn Fs>,
     id: String,
     /// Conversation size after the last completed turn, in tokens.
     context_used: u64,
@@ -69,6 +75,13 @@ impl SessionBuilder {
             None => std::env::current_dir().context("Failed to determine current directory")?,
         };
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let caps = self.capabilities.unwrap_or_else(Capabilities::local);
+        #[cfg(target_arch = "wasm32")]
+        let caps = self
+            .capabilities
+            .context("a wasm session needs capabilities from its host")?;
+
         let system_prompt = Provider::for_model(DEFAULT_MODEL)
             .identity(self.is_oauth)
             .to_string();
@@ -103,8 +116,12 @@ impl SessionBuilder {
              - Use List instead of `ls`, Glob instead of `find`, Grep instead of `grep`.\n\
              - Use Fetch instead of curl/wget for HTTP requests.{git_use_hint}\n\
              - Keep responses concise.\n\
-             - When executing commands, use the working directory as the base for relative paths.",
+             - When executing commands, use the working directory as the base for relative paths.{sandbox_note}",
             cwd = cwd.display(),
+            sandbox_note = match caps.sandbox.describe() {
+                Some(note) => format!("\n\nBash environment: {note}"),
+                None => String::new(),
+            },
             git_use_hint = if cfg!(feature = "git") {
                 "\n             - Use the Git tool instead of `git` CLI for status, diff, log, and branch operations."
             } else {
@@ -127,13 +144,6 @@ impl SessionBuilder {
 
         let bootstrap_len = bootstrap_messages.len();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let caps = self.capabilities.unwrap_or_else(Capabilities::local);
-        #[cfg(target_arch = "wasm32")]
-        let caps = self
-            .capabilities
-            .context("a wasm session needs capabilities from its host")?;
-
         Ok(Session {
             client: ApiClient::new(caps.http.clone(), self.access_token, self.is_oauth),
             cwd,
@@ -142,6 +152,7 @@ impl SessionBuilder {
             bootstrap_len,
             system_prompt,
             tools: tools::default_registry(&caps),
+            fs: caps.fs.clone(),
             id: history::new_id(),
             context_used: 0,
         })
@@ -358,10 +369,16 @@ impl<P: PermissionHandler> Session<P> {
             } else {
                 handler.on_tool_executing(name, input);
 
-                let output = match self.tools.get(name) {
+                let mut output = match self.tools.get(name) {
                     Some(tool) => tool.execute_dyn(input, &self.cwd).await,
                     None => tools::ToolOutput::error(format!("Unknown tool: {name}")),
                 };
+
+                if !output.changes.is_empty() {
+                    let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                    let note = self.apply_changes(command, &output.changes).await;
+                    output.content.push_str(&note);
+                }
 
                 handler.on_tool_result(name, &output.content, output.is_error);
 
@@ -377,6 +394,45 @@ impl<P: PermissionHandler> Session<P> {
         }
 
         results
+    }
+
+    /// Ask for permission to write a sandboxed command's changes to the
+    /// workspace, and write them. Returns a note for the model.
+    async fn apply_changes(&mut self, command: &str, changes: &[FileChange]) -> String {
+        if !self.permissions.allow(&Tool::ApplyChanges { command, changes }) {
+            return "\n\nThe user rejected the file changes of this command. \
+                    The workspace is unchanged."
+                .to_string();
+        }
+
+        let mut note = String::from("\n\nChanged files, applied to the workspace:\n");
+
+        for change in changes {
+            let target = self.cwd.join(change.path());
+
+            let result = match change {
+                FileChange::Written(_, contents) => match target.parent() {
+                    Some(parent) => match self.fs.create_dir_all(parent).await {
+                        Ok(()) => self.fs.write(&target, contents).await,
+                        Err(e) => Err(e),
+                    },
+                    None => self.fs.write(&target, contents).await,
+                },
+                FileChange::Deleted(_) => self.fs.remove_file(&target).await,
+            };
+
+            let verb = match change {
+                FileChange::Written(..) => "wrote",
+                FileChange::Deleted(_) => "deleted",
+            };
+
+            match result {
+                Ok(()) => writeln!(note, "  {verb} {}", change.path().display()).unwrap(),
+                Err(e) => writeln!(note, "  failed to apply {}: {e}", change.path().display()).unwrap(),
+            }
+        }
+
+        note
     }
 }
 
@@ -427,5 +483,45 @@ mod tests {
         s.restore(stored(Some(777)));
         s.clear();
         assert_eq!(s.context_used(), 0);
+    }
+
+    fn session_in<P: PermissionHandler>(cwd: &Path, permissions: P) -> Session<P> {
+        SessionBuilder::new("token".to_string(), false)
+            .cwd(cwd.to_path_buf())
+            .permissions(permissions)
+            .unwrap()
+    }
+
+    fn changes() -> Vec<FileChange> {
+        vec![
+            FileChange::Written("new/out.txt".into(), b"hi".to_vec()),
+            FileChange::Deleted("gone.txt".into()),
+        ]
+    }
+
+    #[tokio::test]
+    async fn approved_changes_reach_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gone.txt"), "x").unwrap();
+
+        let mut s = session_in(dir.path(), AllowAll);
+        let note = s.apply_changes("make", &changes()).await;
+
+        assert_eq!(std::fs::read(dir.path().join("new/out.txt")).unwrap(), b"hi");
+        assert!(!dir.path().join("gone.txt").exists());
+        assert!(note.contains("wrote new/out.txt") && note.contains("deleted gone.txt"));
+    }
+
+    #[tokio::test]
+    async fn rejected_changes_leave_the_workspace_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gone.txt"), "x").unwrap();
+
+        let mut s = session_in(dir.path(), crate::permission::DenyAll);
+        let note = s.apply_changes("make", &changes()).await;
+
+        assert!(dir.path().join("gone.txt").exists());
+        assert!(!dir.path().join("new").exists());
+        assert!(note.contains("rejected"));
     }
 }

@@ -4,6 +4,7 @@ use std::sync::mpsc as std_mpsc;
 use tokio::sync::mpsc;
 
 use claude_code_core::permission::{PermissionConfig, PermissionHandler, Tool};
+use claude_code_core::sandbox::FileChange;
 
 use crate::tui::UiEvent;
 
@@ -68,6 +69,21 @@ impl PermissionHandler for ChannelPermissions {
         // No matching rule — ask the UI
         let description = match tool {
             Tool::Bash { command } => format!("Run command: {command}"),
+            Tool::ApplyChanges { command, changes } => {
+                let mut text = format!("Apply the file changes of `{command}`:");
+
+                for change in *changes {
+                    let line = match change {
+                        FileChange::Written(path, contents) => {
+                            format!("\n  write {} ({} bytes)", path.display(), contents.len())
+                        }
+                        FileChange::Deleted(path) => format!("\n  delete {}", path.display()),
+                    };
+                    text.push_str(&line);
+                }
+
+                text
+            }
             Tool::Read { path } => format!("Read file: {}", path.display()),
             Tool::Write { path } => format!("Write file: {}", path.display()),
             Tool::Edit { path } => format!("Edit file: {}", path.display()),

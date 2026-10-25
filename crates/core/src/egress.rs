@@ -37,6 +37,10 @@ impl Allowlist {
         }
     }
 
+    pub fn patterns(&self) -> &[String] {
+        &self.patterns
+    }
+
     pub fn allows(&self, host: &str) -> bool {
         let host = host.to_ascii_lowercase();
 
