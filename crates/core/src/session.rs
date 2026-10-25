@@ -109,7 +109,7 @@ impl SessionBuilder {
              - **Glob**: Find files by glob pattern (e.g. \"**/*.rs\"). Use this instead of `find`.\n\
              - **List**: List directory contents. Use this instead of `ls`.\n\
              - **Fetch**: Make HTTP requests (GET, POST, etc.). Use this instead of curl/wget.\n\
-             - **Grep**: Search file contents with regex. Use this instead of `grep`.{git_tool_line}{search_tool_line}\n\
+             - **Grep**: Search file contents with regex. Use this instead of `grep`.{git_tool_line}{search_tool_line}{terminal_tool_line}\n\
              \n\
              Important:\n\
              - Use Read/Write/Edit instead of Bash for file operations.\n\
@@ -118,6 +118,11 @@ impl SessionBuilder {
              - Keep responses concise.\n\
              - When executing commands, use the working directory as the base for relative paths.{sandbox_note}",
             cwd = cwd.display(),
+            terminal_tool_line = if cfg!(not(target_arch = "wasm32")) {
+                "\n             - **TerminalOpen/Send/Read/Close**: Interactive terminals that keep running between calls (ssh, REPLs, `container run -it`). They run on the host, outside the Bash sandbox."
+            } else {
+                ""
+            },
             sandbox_note = match caps.sandbox.describe() {
                 Some(note) => format!("\n\nBash environment: {note}"),
                 None => String::new(),

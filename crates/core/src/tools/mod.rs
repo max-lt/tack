@@ -10,6 +10,8 @@ pub mod list;
 pub mod read;
 #[cfg(feature = "search")]
 pub mod search;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod terminal;
 pub mod write;
 
 use std::future::Future;
@@ -168,6 +170,16 @@ pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
     r.register(list::ListTool::new(caps.fs.clone()));
     r.register(fetch::FetchTool::new(caps.http.clone()));
 
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let terminals = std::sync::Arc::new(crate::terminal::Terminals::default());
+        let (open, send, read, close) = terminal::tools(terminals);
+        r.register(open);
+        r.register(send);
+        r.register(read);
+        r.register(close);
+    }
+
     #[cfg(feature = "git")]
     r.register(git::GitTool);
 
@@ -240,6 +252,15 @@ pub fn to_permission_tool<'a>(
             Some(permission::Tool::Git { subcommand })
         }
         "Search" => Some(permission::Tool::Search),
+        "TerminalOpen" => {
+            let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            Some(permission::Tool::TerminalOpen { command })
+        }
+        "TerminalSend" => {
+            let keys = input.get("input").and_then(|c| c.as_str()).unwrap_or("");
+            Some(permission::Tool::TerminalSend { input: keys })
+        }
+        "TerminalRead" | "TerminalClose" => Some(permission::Tool::TerminalWatch),
         _ => None,
     }
 }

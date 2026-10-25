@@ -89,6 +89,11 @@ impl PermissionHandler for ChannelPermissions {
             Tool::Edit { path } => format!("Edit file: {}", path.display()),
             Tool::Fetch { url, method } => format!("HTTP {method} {url}"),
             Tool::Git { subcommand } => format!("Git {subcommand}"),
+            Tool::TerminalOpen { command } if command.is_empty() => {
+                "Open an interactive bash terminal".to_string()
+            }
+            Tool::TerminalOpen { command } => format!("Open a terminal running: {command}"),
+            Tool::TerminalSend { input } => format!("Type into a terminal: {input}"),
             Tool::Glob => "Search files by pattern".to_string(),
             Tool::Grep => "Search file contents".to_string(),
             Tool::List => "List directory contents".to_string(),
