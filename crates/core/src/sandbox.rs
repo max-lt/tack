@@ -68,13 +68,75 @@ impl Sandbox for LocalShell {
 
 /// Runs the command in a Linux VM with Apple's `container` CLI (macOS 26+,
 /// Apple Silicon). The VM sees a copy of the workspace at `/workspace`.
+///
+/// By default the VM is on a host-only network: it cannot reach the
+/// internet, but it can reach services that listen on the Mac.
 #[cfg(target_os = "macos")]
 pub struct AppleContainer {
-    pub image: String,
+    image: String,
+    internet: bool,
+    network_ready: tokio::sync::OnceCell<()>,
 }
 
 #[cfg(target_os = "macos")]
 const GUEST_WORKSPACE: &str = "/workspace";
+
+/// The host-only network the VMs join when they have no internet access.
+#[cfg(target_os = "macos")]
+const OFFLINE_NETWORK: &str = "ccrs-offline";
+
+#[cfg(target_os = "macos")]
+impl AppleContainer {
+    pub fn new(image: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            internet: false,
+            network_ready: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Put the VM on the default network, with internet access.
+    pub fn with_internet(mut self) -> Self {
+        self.internet = true;
+        self
+    }
+
+    async fn network_args(&self) -> io::Result<Vec<&'static str>> {
+        if self.internet {
+            return Ok(Vec::new());
+        }
+
+        self.network_ready
+            .get_or_try_init(|| async {
+                let exists = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
+
+                if !exists.status.success() {
+                    let created =
+                        container(&["network", "create", "--internal", OFFLINE_NETWORK]).await?;
+
+                    if !created.status.success() {
+                        return Err(io::Error::other(format!(
+                            "failed to create network {OFFLINE_NETWORK}: {}",
+                            String::from_utf8_lossy(&created.stderr)
+                        )));
+                    }
+                }
+
+                Ok(())
+            })
+            .await?;
+
+        Ok(vec!["--network", OFFLINE_NETWORK, "--no-dns"])
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn container(args: &[&str]) -> io::Result<std::process::Output> {
+    tokio::process::Command::new("container")
+        .args(args)
+        .output()
+        .await
+}
 
 #[cfg(target_os = "macos")]
 impl Sandbox for AppleContainer {
@@ -83,10 +145,12 @@ impl Sandbox for AppleContainer {
             let copy = tempfile::tempdir()?;
             let before = snapshot(request.workspace, copy.path())?;
 
-            let name = format!("ccrs-{}", crate::history::new_id());
+            let name = format!("ccrs-{:016x}", rand::random::<u64>());
+            let network = self.network_args().await?;
 
             let run = tokio::process::Command::new("container")
                 .args(["run", "--rm", "--name", &name])
+                .args(network)
                 .arg("--volume")
                 .arg(format!("{}:{GUEST_WORKSPACE}", copy.path().display()))
                 .args(["--workdir", GUEST_WORKSPACE, &self.image])
@@ -98,10 +162,7 @@ impl Sandbox for AppleContainer {
                 Ok(output) => output?,
                 Err(_) => {
                     // Killing the CLI does not stop the VM.
-                    let _ = tokio::process::Command::new("container")
-                        .args(["rm", "--force", &name])
-                        .output()
-                        .await;
+                    let _ = container(&["rm", "--force", &name]).await;
                     return Err(io::ErrorKind::TimedOut.into());
                 }
             };
@@ -291,9 +352,7 @@ mod container_tests {
         std::fs::write(workspace.path().join("in.txt"), "hello").unwrap();
         std::fs::write(workspace.path().join("gone.txt"), "x").unwrap();
 
-        let sandbox = AppleContainer {
-            image: "debian:bookworm-slim".to_string(),
-        };
+        let sandbox = AppleContainer::new("debian:bookworm-slim");
 
         let result = sandbox
             .exec(ExecRequest {
@@ -322,5 +381,37 @@ mod container_tests {
         // The workspace itself is untouched.
         assert!(workspace.path().join("gone.txt").exists());
         assert!(!workspace.path().join("out.txt").exists());
+    }
+
+    /// Needs `container system start` and pulls `debian:bookworm-slim`.
+    #[tokio::test]
+    #[ignore]
+    async fn apple_container_is_offline_by_default() {
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = "timeout 3 bash -c 'echo > /dev/tcp/1.1.1.1/80' && echo online || echo offline";
+
+        let run = |sandbox: AppleContainer| {
+            let workspace = workspace.path().to_path_buf();
+            async move {
+                let result = sandbox
+                    .exec(ExecRequest {
+                        command: probe,
+                        workspace: &workspace,
+                        timeout: Duration::from_secs(60),
+                    })
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&result.stdout).trim().to_string()
+            }
+        };
+
+        assert_eq!(
+            run(AppleContainer::new("debian:bookworm-slim")).await,
+            "offline"
+        );
+        assert_eq!(
+            run(AppleContainer::new("debian:bookworm-slim").with_internet()).await,
+            "online"
+        );
     }
 }

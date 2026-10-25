@@ -43,7 +43,7 @@ struct Cli {
     #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
     continue_last: bool,
 
-    /// Run Bash commands in a Linux VM from this OCI image (Apple `container`)
+    /// Run Bash commands in an offline Linux VM from this OCI image (Apple `container`)
     #[cfg(target_os = "macos")]
     #[arg(long, value_name = "IMAGE")]
     sandbox: Option<String>,
@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     if let Some(image) = cli.sandbox.clone() {
         let mut caps = Capabilities::local();
-        caps.sandbox = Arc::new(AppleContainer { image });
+        caps.sandbox = Arc::new(AppleContainer::new(image));
         builder = builder.capabilities(caps);
     }
 
