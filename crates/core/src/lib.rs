@@ -14,3 +14,5 @@ pub mod permission;
 pub mod provider;
 pub mod session;
 pub mod tools;
+#[cfg(target_os = "wasi")]
+pub mod wasi_http;

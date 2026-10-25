@@ -36,5 +36,8 @@ futures-core = "0.3"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
+[target.'cfg(target_os = "wasi")'.dependencies]
+wit-bindgen = { version = "0.60", features = ["async-spawn"] }
+
 [dev-dependencies]
 tempfile = "3"

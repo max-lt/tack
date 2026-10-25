@@ -1,0 +1,8 @@
+package ccrs:guest;
+
+/// What core imports when it runs as a wasm component: outbound HTTP only.
+/// The host sends each request and applies its own network policy.
+world guest {
+    import wasi:http/types@0.3.0;
+    import wasi:http/client@0.3.0;
+}

@@ -20,4 +20,14 @@ impl Capabilities {
             http: Arc::new(crate::http::LocalHttp::new()),
         }
     }
+
+    /// What a WASI host grants: its preopened directories and its
+    /// `wasi:http/client`.
+    #[cfg(target_os = "wasi")]
+    pub fn wasi() -> Self {
+        Self {
+            fs: Arc::new(crate::fs::LocalFs),
+            http: Arc::new(crate::wasi_http::WasiHttp),
+        }
+    }
 }
