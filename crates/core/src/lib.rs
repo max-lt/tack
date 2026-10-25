@@ -12,5 +12,6 @@ pub mod lmstudio;
 pub mod openai;
 pub mod permission;
 pub mod provider;
+pub mod sandbox;
 pub mod session;
 pub mod tools;

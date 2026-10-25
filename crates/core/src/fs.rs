@@ -28,6 +28,8 @@ pub trait Fs: Send + Sync {
 
     fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>>;
 
+    fn remove_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>>;
+
     fn read_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<Vec<DirEntry>>>;
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
@@ -56,6 +58,10 @@ impl Fs for LocalFs {
 
     fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(tokio::fs::create_dir_all(path))
+    }
+
+    fn remove_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>> {
+        Box::pin(tokio::fs::remove_file(path))
     }
 
     fn read_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<Vec<DirEntry>>> {
@@ -95,6 +101,10 @@ impl Fs for LocalFs {
 
     fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(std::future::ready(std::fs::create_dir_all(path)))
+    }
+
+    fn remove_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<()>> {
+        Box::pin(std::future::ready(std::fs::remove_file(path)))
     }
 
     fn read_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, io::Result<Vec<DirEntry>>> {

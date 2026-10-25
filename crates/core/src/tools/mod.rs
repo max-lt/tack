@@ -147,7 +147,7 @@ pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
 
     // Bash needs a real OS: a wasm guest has no processes to spawn.
     #[cfg(not(target_arch = "wasm32"))]
-    r.register(bash::BashTool);
+    r.register(bash::BashTool::new(caps.sandbox.clone(), caps.fs.clone()));
 
     r.register(read::ReadTool::new(caps.fs.clone()));
     r.register(write::WriteTool::new(caps.fs.clone()));

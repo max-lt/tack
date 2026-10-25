@@ -6,8 +6,15 @@ mod ui;
 use anyhow::Result;
 use clap::Parser;
 
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
+
+#[cfg(target_os = "macos")]
+use claude_code_core::capabilities::Capabilities;
 use claude_code_core::config::{Credentials, TokenType};
 use claude_code_core::history::{self, StoredSession};
+#[cfg(target_os = "macos")]
+use claude_code_core::sandbox::AppleContainer;
 use claude_code_core::session::SessionBuilder;
 use claude_code_core::{auth, config};
 
@@ -35,6 +42,11 @@ struct Cli {
     /// Resume the most recent conversation in this directory
     #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
     continue_last: bool,
+
+    /// Run Bash commands in a Linux VM from this OCI image (Apple `container`)
+    #[cfg(target_os = "macos")]
+    #[arg(long, value_name = "IMAGE")]
+    sandbox: Option<String>,
 }
 
 async fn login() -> Result<Credentials> {
@@ -119,7 +131,16 @@ async fn main() -> Result<()> {
         println!("WARNING: --dangerously-skip-permissions is set. All tools run without prompting; deny rules are ignored.\n");
     }
 
-    let mut session = SessionBuilder::new(access_token, is_oauth).permissions(perms)?;
+    let mut builder = SessionBuilder::new(access_token, is_oauth);
+
+    #[cfg(target_os = "macos")]
+    if let Some(image) = cli.sandbox.clone() {
+        let mut caps = Capabilities::local();
+        caps.sandbox = Arc::new(AppleContainer { image });
+        builder = builder.capabilities(caps);
+    }
+
+    let mut session = builder.permissions(perms)?;
 
     let mut restored = Vec::new();
 
