@@ -1,0 +1,8 @@
+# Sandbox VMs on the ccrs-offline network (192.168.128.0/24) may reach the
+# egress proxy on the host (TCP 3128) and the vmnet DHCP server. Everything
+# else they send to the host is dropped.
+ccrs_vms = "192.168.128.0/24"
+
+pass in quick proto tcp from $ccrs_vms to any port 3128 flags S/SA keep state
+pass in quick proto udp from $ccrs_vms port 68 to any port 67
+block drop in quick from $ccrs_vms to any

@@ -70,12 +70,29 @@ impl Sandbox for LocalShell {
 /// Apple Silicon). The VM sees a copy of the workspace at `/workspace`.
 ///
 /// By default the VM is on a host-only network: it cannot reach the
-/// internet, but it can reach services that listen on the Mac.
+/// internet, but it can reach services that listen on the Mac. With an
+/// allowlist, it reaches the allowed hosts over HTTPS through an
+/// [`EgressProxy`](crate::egress::EgressProxy) on the host.
 #[cfg(target_os = "macos")]
 pub struct AppleContainer {
     image: String,
-    internet: bool,
-    network_ready: tokio::sync::OnceCell<()>,
+    egress: Egress,
+    offline: tokio::sync::OnceCell<Offline>,
+    proxy: tokio::sync::OnceCell<String>,
+}
+
+#[cfg(target_os = "macos")]
+enum Egress {
+    None,
+    Allowlist(crate::egress::Allowlist),
+    Internet,
+}
+
+/// The host-only network, as `container network inspect` reports it.
+#[cfg(target_os = "macos")]
+struct Offline {
+    gateway: std::net::Ipv4Addr,
+    subnet: crate::egress::Peers,
 }
 
 #[cfg(target_os = "macos")]
@@ -85,49 +102,112 @@ const GUEST_WORKSPACE: &str = "/workspace";
 #[cfg(target_os = "macos")]
 const OFFLINE_NETWORK: &str = "ccrs-offline";
 
+/// Fixed so that a firewall rule can let the VMs reach the proxy and
+/// nothing else on the host.
+#[cfg(target_os = "macos")]
+pub const PROXY_PORT: u16 = 3128;
+
 #[cfg(target_os = "macos")]
 impl AppleContainer {
     pub fn new(image: impl Into<String>) -> Self {
         Self {
             image: image.into(),
-            internet: false,
-            network_ready: tokio::sync::OnceCell::new(),
+            egress: Egress::None,
+            offline: tokio::sync::OnceCell::new(),
+            proxy: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Let the VM reach these hosts over HTTPS, and nothing else.
+    pub fn with_allowlist(mut self, allowlist: crate::egress::Allowlist) -> Self {
+        self.egress = Egress::Allowlist(allowlist);
+        self
     }
 
     /// Put the VM on the default network, with internet access.
     pub fn with_internet(mut self) -> Self {
-        self.internet = true;
+        self.egress = Egress::Internet;
         self
     }
 
-    async fn network_args(&self) -> io::Result<Vec<&'static str>> {
-        if self.internet {
-            return Ok(Vec::new());
+    /// Arguments for `container run` that set up the network.
+    async fn network_args(&self) -> io::Result<Vec<String>> {
+        let allowlist = match &self.egress {
+            Egress::Internet => return Ok(Vec::new()),
+            Egress::None => None,
+            Egress::Allowlist(allowlist) => Some(allowlist),
+        };
+
+        let offline = self.offline.get_or_try_init(offline_network).await?;
+
+        let mut args = ["--network", OFFLINE_NETWORK, "--no-dns"]
+            .map(String::from)
+            .to_vec();
+
+        if let Some(allowlist) = allowlist {
+            let url = self
+                .proxy
+                .get_or_try_init(|| async {
+                    let proxy = crate::egress::EgressProxy::start(
+                        allowlist.clone(),
+                        offline.subnet,
+                        PROXY_PORT,
+                    )
+                    .await?;
+                    io::Result::Ok(format!("http://{}:{}", offline.gateway, proxy.port))
+                })
+                .await?;
+
+            for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                args.push("--env".to_string());
+                args.push(format!("{var}={url}"));
+            }
         }
 
-        self.network_ready
-            .get_or_try_init(|| async {
-                let exists = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
-
-                if !exists.status.success() {
-                    let created =
-                        container(&["network", "create", "--internal", OFFLINE_NETWORK]).await?;
-
-                    if !created.status.success() {
-                        return Err(io::Error::other(format!(
-                            "failed to create network {OFFLINE_NETWORK}: {}",
-                            String::from_utf8_lossy(&created.stderr)
-                        )));
-                    }
-                }
-
-                Ok(())
-            })
-            .await?;
-
-        Ok(vec!["--network", OFFLINE_NETWORK, "--no-dns"])
+        Ok(args)
     }
+}
+
+/// Create the host-only network if it does not exist and read its gateway
+/// and subnet.
+#[cfg(target_os = "macos")]
+async fn offline_network() -> io::Result<Offline> {
+    let mut inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
+
+    if !inspect.status.success() || inspect.stdout.starts_with(b"[]") {
+        let created = container(&["network", "create", "--internal", OFFLINE_NETWORK]).await?;
+
+        if !created.status.success() {
+            return Err(io::Error::other(format!(
+                "failed to create network {OFFLINE_NETWORK}: {}",
+                String::from_utf8_lossy(&created.stderr)
+            )));
+        }
+
+        inspect = container(&["network", "inspect", OFFLINE_NETWORK]).await?;
+    }
+
+    let report: serde_json::Value = serde_json::from_slice(&inspect.stdout)?;
+    let status = &report[0]["status"];
+    let invalid = || io::Error::other(format!("unexpected network report: {report}"));
+
+    let gateway = status["ipv4Gateway"]
+        .as_str()
+        .and_then(|g| g.parse().ok())
+        .ok_or_else(invalid)?;
+
+    let (network, prefix) = status["ipv4Subnet"]
+        .as_str()
+        .and_then(|s| s.split_once('/'))
+        .ok_or_else(invalid)?;
+
+    Ok(Offline {
+        gateway,
+        subnet: crate::egress::Peers {
+            network: network.parse().map_err(|_| invalid())?,
+            prefix: prefix.parse().map_err(|_| invalid())?,
+        },
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -381,6 +461,44 @@ mod container_tests {
         // The workspace itself is untouched.
         assert!(workspace.path().join("gone.txt").exists());
         assert!(!workspace.path().join("out.txt").exists());
+    }
+
+    /// Needs `container system start` and pulls `debian:bookworm-slim`. The
+    /// image has no curl, so the probe speaks CONNECT by hand.
+    #[tokio::test]
+    #[ignore]
+    async fn apple_container_reaches_allowed_hosts_only() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = AppleContainer::new("debian:bookworm-slim")
+            .with_allowlist(crate::egress::Allowlist::new(["example.com"]));
+
+        // Send CONNECT to the proxy from HTTPS_PROXY and print its status line.
+        let probe = |host: &str| {
+            format!(
+                "p=${{HTTPS_PROXY#http://}}; exec 3<>/dev/tcp/${{p%:*}}/${{p#*:}}; \
+                 printf 'CONNECT {host}:443 HTTP/1.1\\r\\n\\r\\n' >&3; \
+                 timeout 5 head -n1 <&3"
+            )
+        };
+
+        for (host, expected) in [("example.com", "200"), ("example.org", "403")] {
+            let command = probe(host);
+            let result = sandbox
+                .exec(ExecRequest {
+                    command: &command,
+                    workspace: workspace.path(),
+                    timeout: Duration::from_secs(60),
+                })
+                .await
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&result.stdout);
+
+            assert!(
+                stdout.contains(expected),
+                "{host}: {stdout} {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
     }
 
     /// Needs `container system start` and pulls `debian:bookworm-slim`.
