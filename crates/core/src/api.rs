@@ -279,6 +279,10 @@ impl ApiClient {
         }
     }
 
+    pub(crate) fn is_oauth(&self) -> bool {
+        self.is_oauth
+    }
+
     pub(crate) fn model(&self) -> &str {
         &self.model
     }
@@ -482,16 +486,19 @@ impl ApiClient {
             () = cancel.cancelled() => anyhow::bail!("Cancelled"),
         };
 
-        if response.status == http::StatusCode::BAD_REQUEST {
-            anyhow::bail!(
-                "API request rejected (400 Bad Request). The request may be too large. \
-                 Try using /clear to start a new conversation."
-            );
-        }
-
         if !response.status.is_success() {
             let status = response.status;
             let detail = response.bytes().await.unwrap_or_default();
+
+            // The API explains a 400 in its body; the cause varies (size,
+            // billing, a malformed field), so show it as is.
+            if status == http::StatusCode::BAD_REQUEST {
+                anyhow::bail!(
+                    "API request rejected (400 Bad Request): {}",
+                    api_error_message(&detail)
+                );
+            }
+
             anyhow::bail!(
                 "Stream error: HTTP {status}: {}",
                 String::from_utf8_lossy(&detail)
@@ -536,6 +543,14 @@ impl ApiClient {
             Provider::Cerebras | Provider::LmStudio => chunks.into_result(),
         })
     }
+}
+
+/// The `error.message` of an API error body, or the body itself.
+fn api_error_message(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
 }
 
 /// How many user messages, counting back from the newest, get a cache

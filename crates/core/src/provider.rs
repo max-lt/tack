@@ -174,10 +174,16 @@ impl Provider {
 
     /// The first line of the system prompt. Naming the wrong vendor degrades
     /// an open-weights model, so each backend states what it actually is.
-    pub fn identity(self) -> &'static str {
+    ///
+    /// An Anthropic OAuth (subscription) token requires the Claude Code line
+    /// exactly; an API key with that line is refused with a "credit balance
+    /// is too low" error, so it gets the ccrs line.
+    pub fn identity(self, is_oauth: bool) -> &'static str {
         match self {
-            Self::Anthropic => "You are Claude Code, Anthropic's official CLI for Claude.",
-            Self::Cerebras | Self::LmStudio => {
+            Self::Anthropic if is_oauth => {
+                "You are Claude Code, Anthropic's official CLI for Claude."
+            }
+            Self::Anthropic | Self::Cerebras | Self::LmStudio => {
                 "You are ccrs, a coding assistant running in a terminal. \
                  Call the provided tools to inspect and change the codebase."
             }
