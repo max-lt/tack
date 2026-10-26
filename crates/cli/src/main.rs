@@ -1,5 +1,6 @@
 mod commands;
 mod permissions;
+mod print;
 mod tui;
 mod ui;
 
@@ -20,7 +21,8 @@ use claude_code_core::sandbox::AppleContainer;
 use claude_code_core::session::SessionBuilder;
 use claude_code_core::{auth, config};
 
-use permissions::ChannelPermissions;
+use claude_code_core::permission::PermissionHandler;
+use permissions::{ChannelPermissions, PolicyPermissions};
 
 #[derive(Parser)]
 #[command(name = "ccrs", version, about = "Claude Code — Rust edition")]
@@ -45,6 +47,15 @@ struct Cli {
     #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
     continue_last: bool,
 
+    /// Use this session id: resume it if it is saved, else start it
+    #[arg(long, value_name = "ID", conflicts_with_all = ["resume", "continue_last"])]
+    session: Option<String>,
+
+    /// Answer one prompt without the TUI, print the reply and exit. With no
+    /// prompt, read it from stdin. Tools that no rule allows are refused.
+    #[arg(short, long, value_name = "PROMPT", num_args = 0..=1, default_missing_value = "")]
+    print: Option<String>,
+
     /// Run Bash commands in an offline Linux VM from this OCI image (Apple `container`)
     #[cfg(target_os = "macos")]
     #[arg(long, value_name = "IMAGE")]
@@ -64,11 +75,11 @@ async fn login() -> Result<Credentials> {
             let store_refresh = ui::prompt_store_refresh()?;
             let session = auth::start_oauth()?;
 
-            println!("Opening browser for authentication...");
+            eprintln!("Opening browser for authentication...");
 
             if webbrowser::open(&session.auth_url).is_err() {
-                println!("Could not open browser. Please visit this URL manually:");
-                println!("{}", session.auth_url);
+                eprintln!("Could not open browser. Please visit this URL manually:");
+                eprintln!("{}", session.auth_url);
             }
 
             let input = ui::prompt_oauth_code()?;
@@ -89,7 +100,7 @@ async fn get_access_token(creds: &Credentials) -> Result<(String, bool, Option<C
     match creds.token_type() {
         TokenType::OAuthAccess => Ok((creds.token.clone(), true, None)),
         TokenType::OAuthRefresh => {
-            println!("Refreshing access token...");
+            eprintln!("Refreshing access token...");
             let (access_token, updated_creds) = auth::refresh_access_token(creds).await?;
             Ok((access_token, true, Some(updated_creds)))
         }
@@ -105,17 +116,32 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    println!("claude-code-rs v0.1.0\n");
+    let quiet = cli.print.is_some();
+
+    if !quiet {
+        eprintln!("claude-code-rs v0.1.0\n");
+    }
+
+    // An exported key wins over saved credentials, as with `claude`.
+    let env_key = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty() && !cli.login);
 
     let creds = match config::load_credentials()? {
+        _ if env_key.is_some() => Credentials {
+            token: env_key.unwrap_or_default(),
+            is_oauth: false,
+        },
         Some(c) if !cli.login => {
-            println!("Loaded saved credentials.");
+            if !quiet {
+                eprintln!("Loaded saved credentials.");
+            }
             c
         }
         _ => {
             let c = login().await?;
             config::save_credentials(&c)?;
-            println!("Credentials saved.");
+            eprintln!("Credentials saved.");
             c
         }
     };
@@ -130,18 +156,37 @@ async fn main() -> Result<()> {
     let settings = config::load_settings(&cwd);
 
     let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel();
-    let perms = ChannelPermissions::new(settings.permissions, cwd.clone(), ui_tx.clone())
-        .with_auto(cli.auto)
-        .with_skip_all(cli.dangerously_skip_permissions);
+    let perms: Box<dyn PermissionHandler> = if cli.print.is_some() {
+        Box::new(
+            PolicyPermissions::new(settings.permissions, cwd.clone())
+                .with_auto(cli.auto)
+                .with_skip_all(cli.dangerously_skip_permissions),
+        )
+    } else {
+        Box::new(
+            ChannelPermissions::new(settings.permissions, cwd.clone(), ui_tx.clone())
+                .with_auto(cli.auto)
+                .with_skip_all(cli.dangerously_skip_permissions),
+        )
+    };
 
     if cli.dangerously_skip_permissions {
-        println!("WARNING: --dangerously-skip-permissions is set. All tools run without prompting; deny rules are ignored.\n");
+        eprintln!("WARNING: --dangerously-skip-permissions is set. All tools run without prompting; deny rules are ignored.\n");
     }
 
+    // Read the prompt before anything slow, so a missing one fails fast.
+    let prompt = match cli.print.as_deref() {
+        Some("") => Some(print::read_stdin()?),
+        Some(prompt) => Some(prompt.to_string()),
+        None => None,
+    };
+
     let stored = select_session(&cli, &cwd)?;
-    let id = stored
-        .as_ref()
-        .map_or_else(history::new_id, |stored| stored.id.clone());
+    let id = match (&stored, &cli.session) {
+        (Some(stored), _) => stored.id.clone(),
+        (None, Some(id)) => id.clone(),
+        (None, None) => history::new_id(),
+    };
 
     let mut builder = SessionBuilder::new(access_token, is_oauth).id(id.clone());
 
@@ -154,7 +199,7 @@ async fn main() -> Result<()> {
             Some(client)
         }
         Err(e) => {
-            println!("Crosstalk is off: {e:#}\n");
+            eprintln!("Crosstalk is off: {e:#}\n");
             None
         }
     };
@@ -181,6 +226,17 @@ async fn main() -> Result<()> {
         session.restore(stored);
     }
 
+    if let Some(prompt) = prompt {
+        let result = print::run(session, &prompt).await;
+
+        #[cfg(feature = "crosstalk")]
+        if let Some(client) = crosstalk {
+            client.stop().await;
+        }
+
+        return result;
+    }
+
     #[cfg(feature = "crosstalk")]
     {
         let result = tui::run(cwd, session, restored, ui_tx, ui_rx, crosstalk.clone());
@@ -205,6 +261,10 @@ async fn start_crosstalk(id: &str) -> Result<Arc<claude_code_core::crosstalk::Cl
 
 /// Resolve `--resume [ID]` / `--continue` to a saved session, if requested.
 fn select_session(cli: &Cli, cwd: &std::path::Path) -> Result<Option<StoredSession>> {
+    if let Some(id) = &cli.session {
+        return history::find(id);
+    }
+
     if let Some(id) = cli.resume.as_deref().filter(|id| !id.is_empty()) {
         return history::load(id).map(Some);
     }
@@ -216,7 +276,7 @@ fn select_session(cli: &Cli, cwd: &std::path::Path) -> Result<Option<StoredSessi
     let saved = history::list(cwd)?;
 
     if saved.is_empty() {
-        println!("No saved conversations in this directory. Starting a new one.\n");
+        eprintln!("No saved conversations in this directory. Starting a new one.\n");
         return Ok(None);
     }
 

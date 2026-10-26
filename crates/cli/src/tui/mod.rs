@@ -27,7 +27,7 @@ use claude_code_core::session::Session;
 use claude_code_core::crosstalk::{self, Client as Crosstalk};
 
 use crate::commands::{self, CommandResult};
-use crate::permissions::ChannelPermissions;
+use claude_code_core::permission::PermissionHandler;
 
 pub use event::{ChannelEventHandler, SessionCmd, UiEvent};
 
@@ -843,7 +843,7 @@ fn first_suggestion(input: &str) -> Option<&'static str> {
 /// Write the conversation to disk and remember its id for the exit hint.
 /// Does nothing while the session holds nothing beyond the bootstrap.
 fn persist(
-    session: &Session<ChannelPermissions>,
+    session: &Session<Box<dyn PermissionHandler>>,
     ui_tx: &mpsc::UnboundedSender<UiEvent>,
     last_saved: &Mutex<Option<String>>,
 ) {
@@ -889,7 +889,7 @@ async fn crosstalk_pump(client: Arc<Crosstalk>, ui_tx: mpsc::UnboundedSender<UiE
 }
 
 async fn session_loop(
-    mut session: Session<ChannelPermissions>,
+    mut session: Session<Box<dyn PermissionHandler>>,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCmd>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     last_saved: Arc<Mutex<Option<String>>>,
@@ -985,7 +985,7 @@ async fn session_loop(
 
 pub fn run(
     cwd: PathBuf,
-    session: Session<ChannelPermissions>,
+    session: Session<Box<dyn PermissionHandler>>,
     restored: Vec<DisplayMessage>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,

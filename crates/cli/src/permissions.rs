@@ -122,3 +122,45 @@ impl PermissionHandler for ChannelPermissions {
         rx.recv().unwrap_or(false)
     }
 }
+
+/// Permission handler for `--print`: there is nobody to ask, so a tool that
+/// no rule allows is refused.
+pub struct PolicyPermissions {
+    config: PermissionConfig,
+    project_dir: PathBuf,
+    auto: bool,
+    skip_all: bool,
+}
+
+impl PolicyPermissions {
+    pub fn new(config: PermissionConfig, project_dir: PathBuf) -> Self {
+        Self {
+            config,
+            project_dir,
+            auto: false,
+            skip_all: false,
+        }
+    }
+
+    /// Allow any tool that no config rule covers. A `deny` rule still blocks.
+    pub fn with_auto(mut self, auto: bool) -> Self {
+        self.auto = auto;
+        self
+    }
+
+    /// Allow every tool invocation, ignoring all config rules (including `deny`).
+    pub fn with_skip_all(mut self, skip_all: bool) -> Self {
+        self.skip_all = skip_all;
+        self
+    }
+}
+
+impl PermissionHandler for PolicyPermissions {
+    fn allow(&mut self, tool: &Tool<'_>) -> bool {
+        self.skip_all
+            || self
+                .config
+                .check(tool, &self.project_dir)
+                .unwrap_or(self.auto)
+    }
+}

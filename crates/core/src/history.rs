@@ -70,6 +70,18 @@ pub fn load(id: &str) -> Result<StoredSession> {
     load_from(&sessions_dir()?, id)
 }
 
+/// The saved session `id`, or `None` when there is none yet. Unlike
+/// [`load`], a missing file is not an error; a bad id still is.
+pub fn find(id: &str) -> Result<Option<StoredSession>> {
+    let path = session_path(&sessions_dir()?, id)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    load(id).map(Some)
+}
+
 /// Saved sessions started from `cwd`, most recent first.
 pub fn list(cwd: &Path) -> Result<Vec<SessionSummary>> {
     list_in(&sessions_dir()?, cwd)
