@@ -6,6 +6,8 @@ edition = "2024"
 [features]
 search = ["dep:ccrs-search"]
 git = ["dep:ccrs-git"]
+# Talk to other people's agents through a local `crosstalk daemon`.
+crosstalk = []
 
 [dependencies]
 ccrs-utils = { path = "../utils" }

@@ -3,6 +3,8 @@ pub mod api;
 pub mod auth;
 pub mod capabilities;
 pub mod config;
+#[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
+pub mod crosstalk;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod egress;
 pub mod event;

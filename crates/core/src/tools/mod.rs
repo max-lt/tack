@@ -1,5 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bash;
+#[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
+pub mod crosstalk;
 pub mod edit;
 pub mod fetch;
 #[cfg(feature = "git")]
@@ -262,6 +264,24 @@ pub fn to_permission_tool<'a>(
             Some(permission::Tool::TerminalSend { input: keys })
         }
         "TerminalRead" | "TerminalClose" => Some(permission::Tool::TerminalWatch),
+        "CrosstalkWhoami" | "CrosstalkPeers" => Some(permission::Tool::CrosstalkWatch),
+        "CrosstalkSend" | "CrosstalkConnect" | "CrosstalkForget" => {
+            let field = |key| input.get(key).and_then(|v| v.as_str()).unwrap_or("");
+            let action = match name {
+                "CrosstalkSend" => "send",
+                "CrosstalkConnect" => "connect",
+                _ => "forget",
+            };
+            let text = match name {
+                "CrosstalkSend" => field("text"),
+                _ => field("description"),
+            };
+            Some(permission::Tool::Crosstalk {
+                action,
+                peer: field("peer"),
+                text,
+            })
+        }
         _ => None,
     }
 }

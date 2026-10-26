@@ -12,6 +12,7 @@ default = ["git", "search", "voice"]
 git = ["claude-code-core/git"]
 search = ["claude-code-core/search"]
 voice = ["dep:cpal", "dep:hound"]
+crosstalk = ["claude-code-core/crosstalk"]
 
 [dependencies]
 claude-code-core = { path = "../core" }

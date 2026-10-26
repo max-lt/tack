@@ -23,6 +23,9 @@ use claude_code_core::lmstudio::{self, LmModel};
 use claude_code_core::provider::{context_window_for, lm_studio_model_id};
 use claude_code_core::session::Session;
 
+#[cfg(feature = "crosstalk")]
+use claude_code_core::crosstalk::{self, Client as Crosstalk};
+
 use crate::commands::{self, CommandResult};
 use crate::permissions::ChannelPermissions;
 
@@ -187,6 +190,8 @@ pub struct App {
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     session_tx: mpsc::UnboundedSender<SessionCmd>,
+    #[cfg(feature = "crosstalk")]
+    crosstalk: Option<Arc<Crosstalk>>,
 }
 
 impl App {
@@ -238,6 +243,8 @@ impl App {
             ui_rx,
             ui_tx,
             session_tx,
+            #[cfg(feature = "crosstalk")]
+            crosstalk: None,
         }
     }
 
@@ -544,6 +551,9 @@ impl App {
                     self.pending_voice_recording = true;
                     return false;
                 }
+
+                #[cfg(feature = "crosstalk")]
+                CommandResult::Crosstalk(args) => self.crosstalk_command(args),
             }
 
             return false;
@@ -655,6 +665,89 @@ impl App {
                     respond,
                 });
             }
+
+            #[cfg(feature = "crosstalk")]
+            UiEvent::Crosstalk(raw) => self.crosstalk_events(raw),
+
+            #[cfg(feature = "crosstalk")]
+            UiEvent::CrosstalkReply(reply) => {
+                self.messages.push(DisplayMessage::Info(reply));
+            }
+        }
+    }
+
+    /// Run `/crosstalk <cmd> [args]` against the daemon. These are the
+    /// commands the model has no tool for: pairing is the user's decision.
+    #[cfg(feature = "crosstalk")]
+    fn crosstalk_command(&mut self, mut args: Vec<String>) {
+        let Some(client) = self.crosstalk.clone() else {
+            self.messages
+                .push(DisplayMessage::Error("Crosstalk is off.".to_string()));
+            return;
+        };
+
+        if args.is_empty() {
+            args.push("whoami".to_string());
+        }
+
+        match (args[0].as_str(), args.len()) {
+            ("accept" | "connect", 2) => args.push("ccrs session".to_string()),
+            ("accept" | "connect", n) if n > 3 => {
+                let description = args.split_off(2).join(" ");
+                args.push(description);
+            }
+            ("forget", 1) => {
+                self.messages.push(DisplayMessage::Error(
+                    "Name a peer, or --all to drop every peer and the identity.".to_string(),
+                ));
+                return;
+            }
+            ("forget", 2) if args[1] == "--all" => {
+                args.pop();
+            }
+            _ => {}
+        }
+
+        let tx = self.ui_tx.clone();
+
+        tokio::spawn(async move {
+            let (cmd, rest) = args.split_first().expect("args is not empty");
+            let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+
+            let reply = match client.request(cmd, &rest).await {
+                Ok(reply) => reply,
+                Err(e) => format!("{e:#}"),
+            };
+            let _ = tx.send(UiEvent::CrosstalkReply(reply));
+        });
+    }
+
+    /// Show drained crosstalk events, and hand all but pairing requests to
+    /// the model as a notice. A pairing request is for the user alone.
+    #[cfg(feature = "crosstalk")]
+    fn crosstalk_events(&mut self, raw: String) {
+        let (intros, others): (Vec<_>, Vec<_>) = crosstalk::parse_events(&raw)
+            .into_iter()
+            .partition(|e| e.kind == "intro");
+
+        for intro in &intros {
+            self.messages.push(DisplayMessage::Info(format!(
+                "{}\n{}\nAccept with: /crosstalk accept <id> [description]",
+                intro.header, intro.body
+            )));
+        }
+
+        if others.is_empty() {
+            return;
+        }
+
+        let notice = crosstalk::notice(&others);
+
+        if self.state.is_busy() {
+            self.queue.push_back(notice);
+        } else {
+            self.auto_scroll = true;
+            self.submit_text(notice);
         }
     }
 
@@ -770,6 +863,31 @@ fn persist(
     }
 }
 
+/// Wait on the daemon's inbox and pass every batch of events to the UI.
+#[cfg(feature = "crosstalk")]
+async fn crosstalk_pump(client: Arc<Crosstalk>, ui_tx: mpsc::UnboundedSender<UiEvent>) {
+    let mut reported = false;
+
+    loop {
+        match client.inbox(Duration::from_secs(300)).await {
+            Ok(Some(raw)) => {
+                reported = false;
+                if ui_tx.send(UiEvent::Crosstalk(raw)).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => reported = false,
+            Err(e) => {
+                // Report a dead daemon once, then keep retrying quietly.
+                if !std::mem::replace(&mut reported, true) {
+                    let _ = ui_tx.send(UiEvent::Error(format!("{e:#}")));
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
 async fn session_loop(
     mut session: Session<ChannelPermissions>,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCmd>,
@@ -871,6 +989,7 @@ pub fn run(
     restored: Vec<DisplayMessage>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,
+    #[cfg(feature = "crosstalk")] crosstalk: Option<Arc<Crosstalk>>,
 ) -> Result<()> {
     let model = session.model().to_string();
     // A resumed session starts with the size it had when it was saved.
@@ -919,8 +1038,17 @@ pub fn run(
         original_hook(info);
     }));
 
+    #[cfg(feature = "crosstalk")]
+    if let Some(client) = crosstalk.clone() {
+        tokio::spawn(crosstalk_pump(client, app_ui_tx.clone()));
+    }
+
     let mut app = App::new(cwd, model, restored, ui_rx, app_ui_tx, session_tx);
     app.context_used = context_used;
+    #[cfg(feature = "crosstalk")]
+    {
+        app.crosstalk = crosstalk;
+    }
 
     // Start with a clean alternate screen
     terminal.clear()?;

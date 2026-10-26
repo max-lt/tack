@@ -36,6 +36,12 @@ pub enum UiEvent {
         description: String,
         respond: std_mpsc::SyncSender<bool>,
     },
+    /// Events drained from the crosstalk daemon, as it printed them.
+    #[cfg(feature = "crosstalk")]
+    Crosstalk(String),
+    /// Reply of a `/crosstalk` command.
+    #[cfg(feature = "crosstalk")]
+    CrosstalkReply(String),
 }
 
 /// Commands sent from the UI to the session task.

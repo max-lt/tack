@@ -22,6 +22,9 @@ pub enum CommandResult {
     SendMessage(String),
     #[cfg(feature = "voice")]
     RecordVoice,
+    /// Run a crosstalk daemon command: the words after `/crosstalk`.
+    #[cfg(feature = "crosstalk")]
+    Crosstalk(Vec<String>),
 }
 
 /// A slash command definition for autocomplete suggestions.
@@ -61,6 +64,13 @@ pub fn available_commands() -> Vec<CommandDef> {
         name: "/rec",
         aliases: &[],
         description: "Record and transcribe voice input",
+    });
+
+    #[cfg(feature = "crosstalk")]
+    cmds.push(CommandDef {
+        name: "/crosstalk",
+        aliases: &[],
+        description: "whoami, peers, accept <id>, connect <id>, forget <id|--all>, add-hub <url>",
     });
 
     cmds
@@ -104,6 +114,10 @@ pub fn handle_command(input: &str, current_model: &str) -> Option<CommandResult>
         }
         #[cfg(feature = "voice")]
         "/rec" => Some(CommandResult::RecordVoice),
+        #[cfg(feature = "crosstalk")]
+        "/crosstalk" => Some(CommandResult::Crosstalk(
+            input.split_whitespace().skip(1).map(String::from).collect(),
+        )),
         _ if cmd.starts_with('/') => Some(CommandResult::Info(format!(
             "Unknown command: {cmd}. Type /help for available commands."
         ))),

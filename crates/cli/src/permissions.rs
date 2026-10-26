@@ -98,6 +98,11 @@ impl PermissionHandler for ChannelPermissions {
                 }
             }
             Tool::TerminalSend { input } => format!("Type into a terminal: {input}"),
+            Tool::Crosstalk { action, peer, text } => match *action {
+                "send" => format!("Crosstalk: send to {peer}:\n  {text}"),
+                "connect" => format!("Crosstalk: ask {peer} to pair, as \"{text}\""),
+                _ => format!("Crosstalk: {action} {peer}"),
+            },
             Tool::Glob => "Search files by pattern".to_string(),
             Tool::Grep => "Search file contents".to_string(),
             Tool::List => "List directory contents".to_string(),

@@ -6,7 +6,7 @@ mod ui;
 use anyhow::Result;
 use clap::Parser;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", feature = "crosstalk"))]
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
@@ -138,7 +138,26 @@ async fn main() -> Result<()> {
         println!("WARNING: --dangerously-skip-permissions is set. All tools run without prompting; deny rules are ignored.\n");
     }
 
-    let mut builder = SessionBuilder::new(access_token, is_oauth);
+    let stored = select_session(&cli, &cwd)?;
+    let id = stored
+        .as_ref()
+        .map_or_else(history::new_id, |stored| stored.id.clone());
+
+    let mut builder = SessionBuilder::new(access_token, is_oauth).id(id.clone());
+
+    // One crosstalk daemon per session id: a resumed session keeps its
+    // identity and its peers.
+    #[cfg(feature = "crosstalk")]
+    let crosstalk = match start_crosstalk(&id).await {
+        Ok(client) => {
+            builder = builder.crosstalk(client.clone());
+            Some(client)
+        }
+        Err(e) => {
+            println!("Crosstalk is off: {e:#}\n");
+            None
+        }
+    };
 
     #[cfg(target_os = "macos")]
     if let Some(image) = cli.sandbox.clone() {
@@ -157,12 +176,31 @@ async fn main() -> Result<()> {
 
     let mut restored = Vec::new();
 
-    if let Some(stored) = select_session(&cli, &cwd)? {
+    if let Some(stored) = stored {
         restored = tui::display_history(&stored.messages);
         session.restore(stored);
     }
 
+    #[cfg(feature = "crosstalk")]
+    {
+        let result = tui::run(cwd, session, restored, ui_tx, ui_rx, crosstalk.clone());
+
+        if let Some(client) = crosstalk {
+            client.stop().await;
+        }
+
+        result
+    }
+
+    #[cfg(not(feature = "crosstalk"))]
     tui::run(cwd, session, restored, ui_tx, ui_rx)
+}
+
+#[cfg(feature = "crosstalk")]
+async fn start_crosstalk(id: &str) -> Result<Arc<claude_code_core::crosstalk::Client>> {
+    let client = claude_code_core::crosstalk::Client::new(id)?;
+    client.start().await?;
+    Ok(Arc::new(client))
 }
 
 /// Resolve `--resume [ID]` / `--continue` to a saved session, if requested.
