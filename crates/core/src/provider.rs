@@ -24,11 +24,35 @@ pub const LM_STUDIO_PREFIX: &str = "lmstudio:";
 pub const LM_STUDIO_DEFAULT_URL: &str = "http://localhost:1234";
 
 /// The Messages API URL. `ANTHROPIC_BASE_URL` points ccrs at another
-/// server, as it does for `claude`: a proxy, or a mock in tests.
-fn anthropic_endpoint(base: Option<String>) -> String {
-    let base = base.filter(|b| !b.trim().is_empty());
-    let base = base.as_deref().map_or("https://api.anthropic.com", |b| b.trim_end_matches('/'));
-    format!("{base}/v1/messages")
+/// server, as it does for `claude`: a proxy, or a mock in tests. The API
+/// key goes to that server, so plain http is allowed only to this machine.
+fn anthropic_endpoint(base: Option<String>) -> anyhow::Result<String> {
+    let Some(base) = base.filter(|b| !b.trim().is_empty()) else {
+        return Ok("https://api.anthropic.com/v1/messages".to_string());
+    };
+
+    let base = base.trim().trim_end_matches('/');
+    let url = url::Url::parse(base)
+        .map_err(|e| anyhow::anyhow!("ANTHROPIC_BASE_URL is not a URL ({e}): {base}"))?;
+
+    let loopback = match url.host() {
+        Some(url::Host::Domain(name)) => name == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+
+    match url.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        "http" => anyhow::bail!(
+            "ANTHROPIC_BASE_URL uses http to {base}: the API key would go in clear text. \
+             Use https, or http to localhost, 127.0.0.1 or ::1"
+        ),
+        scheme => anyhow::bail!("ANTHROPIC_BASE_URL must use https, not {scheme}: {base}"),
+    }
+
+    Ok(format!("{base}/v1/messages"))
 }
 
 /// Base URL of the LM Studio server. `LMSTUDIO_BASE_URL` overrides the default.
@@ -125,11 +149,11 @@ impl Provider {
         Self::Anthropic
     }
 
-    pub fn endpoint(self) -> String {
+    pub fn endpoint(self) -> anyhow::Result<String> {
         match self {
             Self::Anthropic => anthropic_endpoint(std::env::var("ANTHROPIC_BASE_URL").ok()),
-            Self::Cerebras => "https://api.cerebras.ai/v1/chat/completions".to_string(),
-            Self::LmStudio => format!("{}/v1/chat/completions", lm_studio_base_url()),
+            Self::Cerebras => Ok("https://api.cerebras.ai/v1/chat/completions".to_string()),
+            Self::LmStudio => Ok(format!("{}/v1/chat/completions", lm_studio_base_url())),
         }
     }
 
@@ -203,12 +227,28 @@ impl Provider {
 mod tests {
     #[test]
     fn the_anthropic_endpoint_follows_the_base_url() {
-        assert_eq!(anthropic_endpoint(None), "https://api.anthropic.com/v1/messages");
-        assert_eq!(anthropic_endpoint(Some(String::new())), "https://api.anthropic.com/v1/messages");
-        assert_eq!(
-            anthropic_endpoint(Some("http://127.0.0.1:8099/".to_string())),
-            "http://127.0.0.1:8099/v1/messages"
-        );
+        let url = |base: Option<&str>| anthropic_endpoint(base.map(String::from)).unwrap();
+
+        assert_eq!(url(None), "https://api.anthropic.com/v1/messages");
+        assert_eq!(url(Some("")), "https://api.anthropic.com/v1/messages");
+        assert_eq!(url(Some("http://127.0.0.1:8099/")), "http://127.0.0.1:8099/v1/messages");
+        assert_eq!(url(Some("http://localhost:8099")), "http://localhost:8099/v1/messages");
+        assert_eq!(url(Some("http://[::1]:8099")), "http://[::1]:8099/v1/messages");
+        assert_eq!(url(Some("https://proxy.example.com")), "https://proxy.example.com/v1/messages");
+    }
+
+    #[test]
+    fn a_base_url_that_would_send_the_key_in_clear_text_is_refused() {
+        for base in [
+            "http://proxy.example.com",
+            "http://10.0.0.5:8080",
+            "http://127.0.0.1.example.com",
+            "ftp://127.0.0.1",
+            "not a url",
+        ] {
+            let err = anthropic_endpoint(Some(base.to_string())).unwrap_err();
+            assert!(err.to_string().contains("ANTHROPIC_BASE_URL"), "{base}: {err}");
+        }
     }
 
     use super::*;

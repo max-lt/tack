@@ -403,7 +403,7 @@ impl ApiClient {
     fn build_request(&self, body: &serde_json::Value) -> Result<Request> {
         let provider = self.provider();
 
-        let mut req = Request::new(Method::POST, provider.endpoint(), REQUEST_TIMEOUT);
+        let mut req = Request::new(Method::POST, provider.endpoint()?, REQUEST_TIMEOUT);
         req.headers
             .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let mut header = |name: HeaderName, value: &str| -> Result<()> {
