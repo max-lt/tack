@@ -108,6 +108,8 @@ pub struct Monitors {
     registry: &'static Registry,
     /// When the session's monitors last woke the model.
     wake_ups: Arc<Mutex<VecDeque<Duration>>>,
+    /// Set when someone delivers the events to the model. ccrs -p does not.
+    listened: std::sync::atomic::AtomicBool,
 }
 
 impl Monitors {
@@ -128,6 +130,7 @@ impl Monitors {
             store,
             registry,
             wake_ups: Arc::default(),
+            listened: std::sync::atomic::AtomicBool::new(false),
         };
 
         (Arc::new(monitors), rx)
@@ -370,6 +373,15 @@ impl Monitors {
         running.stop.cancel();
         self.store.lock().unwrap().remove_monitor(id);
         true
+    }
+
+    /// Record that the events reach the model.
+    pub fn set_listened(&self) {
+        self.listened.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_listened(&self) -> bool {
+        self.listened.load(Ordering::SeqCst)
     }
 
     /// Stop every monitor.

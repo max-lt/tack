@@ -99,8 +99,13 @@ impl ToolDef for MonitorTool {
         };
 
         match start(&self.monitors, &*self.sandbox, cwd, spec).await {
-            Ok(id) => ToolOutput::success(format!(
+            Ok(id) if self.monitors.is_listened() => ToolOutput::success(format!(
                 "Monitor {id} started. Its output will reach you as messages."
+            )),
+            Ok(id) => ToolOutput::success(format!(
+                "Monitor {id} started. This run (ccrs -p) ends after this turn, and the \
+                 monitor stops with it: its output will not reach you. The monitor stays \
+                 in the session file, and a later interactive resume offers to start it again."
             )),
             Err(e) => ToolOutput::error(format!("Failed to start monitor: {e}")),
         }
@@ -251,6 +256,27 @@ mod tests {
             .await
             .content;
         assert_eq!(out, "No monitor is running.");
+    }
+
+    #[tokio::test]
+    async fn the_result_says_whether_the_output_will_come() {
+        let input = serde_json::json!({ "command": "sleep 30", "description": "d" });
+
+        // ccrs -p: nobody reads the events.
+        let (start, _, stop) = tools();
+        let out = start.execute(&input, Path::new("/")).await.content;
+        assert!(out.contains("ends after this turn"), "{out}");
+        assert!(out.contains("will not reach you"), "{out}");
+        assert!(out.contains("session file"), "{out}");
+        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/")).await;
+
+        // The TUI reads them.
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        monitors.set_listened();
+        let (start, _, stop) = super::tools(monitors, Arc::new(LocalShell));
+        let out = start.execute(&input, Path::new("/")).await.content;
+        assert!(out.contains("will reach you as messages"), "{out}");
+        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/")).await;
     }
 
     #[test]

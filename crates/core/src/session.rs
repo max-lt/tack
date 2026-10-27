@@ -358,7 +358,11 @@ impl<P: PermissionHandler> Session<P> {
     pub fn take_monitor_events(
         &mut self,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<crate::monitor::MonitorEvent>> {
-        self.monitor_events.take()
+        let events = self.monitor_events.take();
+        if events.is_some() {
+            self.monitors.set_listened();
+        }
+        events
     }
 
     /// Start again the monitors a restored session had, with their ids.
