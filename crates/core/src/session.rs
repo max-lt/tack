@@ -350,6 +350,19 @@ impl<P: PermissionHandler> Session<P> {
         let mut note = String::from("Monitors started again:");
 
         for m in saved {
+            if self.monitors.list().len() >= crate::monitor::MAX_MONITORS {
+                write!(
+                    note,
+                    "\n- monitor {} dropped: {} ({}), over the limit of {} monitors",
+                    m.id,
+                    m.description,
+                    m.command,
+                    crate::monitor::MAX_MONITORS
+                )
+                .unwrap();
+                continue;
+            }
+
             let tool = Tool::Monitor {
                 command: &m.command,
                 host: m.host,
@@ -723,6 +736,32 @@ mod tests {
             .unwrap();
         assert_eq!((event.id, event.lines), (7, vec!["again".to_string()]));
         assert_eq!(s.restart_monitors().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_resume_with_too_many_monitors_drops_the_extra_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut saved = stored(Some(1));
+        let max = crate::monitor::MAX_MONITORS as u32;
+        for id in 1..=max + 2 {
+            saved.store.add_monitor(crate::store::MonitorEntry {
+                id,
+                command: "sleep 30".to_string(),
+                description: format!("m{id}"),
+                host: true,
+            });
+        }
+
+        s.restore(saved);
+        let note = s.restart_monitors().await.unwrap();
+
+        assert_eq!(s.monitors.list().len(), crate::monitor::MAX_MONITORS);
+        for id in [max + 1, max + 2] {
+            let line = format!("- monitor {id} dropped: m{id} (sleep 30)");
+            assert!(note.contains(&line), "missing {line:?} in:\n{note}");
+        }
+        assert_eq!(s.store().monitors.len(), crate::monitor::MAX_MONITORS);
     }
 
     #[tokio::test]
