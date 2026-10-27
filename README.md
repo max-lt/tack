@@ -41,7 +41,7 @@ On first launch, authenticate via **OAuth** (browser) or **API key** (`sk-ant-..
 
 Then type your messages at the `>` prompt. Claude streams responses and uses tools as needed, asking permission before executing.
 
-`ANTHROPIC_API_KEY`, when set, takes priority over the saved credentials.
+`ANTHROPIC_API_KEY`, when set, takes priority over the saved credentials. `ANTHROPIC_BASE_URL` points `ccrs` at another server for the Anthropic models, for example a proxy.
 
 | Flag | Description |
 |------|-------------|

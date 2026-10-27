@@ -23,6 +23,14 @@ pub const LM_STUDIO_PREFIX: &str = "lmstudio:";
 /// Default address of the LM Studio local server.
 pub const LM_STUDIO_DEFAULT_URL: &str = "http://localhost:1234";
 
+/// The Messages API URL. `ANTHROPIC_BASE_URL` points ccrs at another
+/// server, as it does for `claude`: a proxy, or a mock in tests.
+fn anthropic_endpoint(base: Option<String>) -> String {
+    let base = base.filter(|b| !b.trim().is_empty());
+    let base = base.as_deref().map_or("https://api.anthropic.com", |b| b.trim_end_matches('/'));
+    format!("{base}/v1/messages")
+}
+
 /// Base URL of the LM Studio server. `LMSTUDIO_BASE_URL` overrides the default.
 pub fn lm_studio_base_url() -> String {
     std::env::var("LMSTUDIO_BASE_URL")
@@ -119,7 +127,7 @@ impl Provider {
 
     pub fn endpoint(self) -> String {
         match self {
-            Self::Anthropic => "https://api.anthropic.com/v1/messages".to_string(),
+            Self::Anthropic => anthropic_endpoint(std::env::var("ANTHROPIC_BASE_URL").ok()),
             Self::Cerebras => "https://api.cerebras.ai/v1/chat/completions".to_string(),
             Self::LmStudio => format!("{}/v1/chat/completions", lm_studio_base_url()),
         }
@@ -193,6 +201,16 @@ impl Provider {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_anthropic_endpoint_follows_the_base_url() {
+        assert_eq!(anthropic_endpoint(None), "https://api.anthropic.com/v1/messages");
+        assert_eq!(anthropic_endpoint(Some(String::new())), "https://api.anthropic.com/v1/messages");
+        assert_eq!(
+            anthropic_endpoint(Some("http://127.0.0.1:8099/".to_string())),
+            "http://127.0.0.1:8099/v1/messages"
+        );
+    }
+
     use super::*;
 
     #[test]
