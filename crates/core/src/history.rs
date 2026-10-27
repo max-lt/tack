@@ -254,6 +254,81 @@ mod tests {
         assert!(load_from(tmp.path(), "").is_err());
     }
 
+    fn write_raw(dir: &Path, id: &str, contents: &str) {
+        fs::write(dir.join(format!("{id}.json")), contents).unwrap();
+    }
+
+    fn json_of(s: &StoredSession) -> serde_json::Value {
+        serde_json::to_value(s).unwrap()
+    }
+
+    #[test]
+    fn bad_json_is_a_clear_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_raw(tmp.path(), "1", "{\"id\": \"1\", \"messages\": [");
+
+        let err = load_from(tmp.path(), "1").unwrap_err();
+        assert!(err.to_string().contains("Session 1 is corrupted"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_file_is_a_clear_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_raw(tmp.path(), "1", "");
+
+        let err = load_from(tmp.path(), "1").unwrap_err();
+        assert!(err.to_string().contains("corrupted"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_required_field_is_an_error_and_an_optional_one_a_default() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut json = json_of(&stored("1", "/p", 10, "hi"));
+        json.as_object_mut().unwrap().remove("messages");
+        write_raw(tmp.path(), "1", &json.to_string());
+        assert!(load_from(tmp.path(), "1").is_err());
+
+        let mut json = json_of(&stored("2", "/p", 10, "hi"));
+        json.as_object_mut().unwrap().remove("store");
+        write_raw(tmp.path(), "2", &json.to_string());
+        assert!(load_from(tmp.path(), "2").unwrap().store.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_field_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut json = json_of(&stored("1", "/p", 10, "hi"));
+        json["from_the_future"] = serde_json::json!({ "x": 1 });
+        write_raw(tmp.path(), "1", &json.to_string());
+
+        assert_eq!(load_from(tmp.path(), "1").unwrap().messages.len(), 2);
+    }
+
+    #[test]
+    fn a_cut_write_leaves_the_saved_session_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_in(tmp.path(), &stored("1", "/p", 10, "kept")).unwrap();
+        // What a crash during the write of the temporary file leaves.
+        fs::write(tmp.path().join("1.json.tmp"), "{\"id\": \"1\", \"mess").unwrap();
+
+        let loaded = load_from(tmp.path(), "1").unwrap();
+        assert_eq!(loaded.messages[0].content.to_text(), "kept");
+        assert_eq!(list_in(tmp.path(), Path::new("/p")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ids_with_path_characters_are_refused_for_save_and_load() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        for id in ["../x", "a/b", "/abs", "a\\b", "..", "a.b", "a b"] {
+            assert!(load_from(tmp.path(), id).is_err(), "load {id:?}");
+            assert!(save_in(tmp.path(), &stored(id, "/p", 1, "x")).is_err(), "save {id:?}");
+        }
+
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn list_filters_by_cwd_and_sorts_recent_first() {
         let tmp = tempfile::tempdir().unwrap();
