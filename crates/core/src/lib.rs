@@ -10,6 +10,7 @@ pub mod egress;
 pub mod event;
 pub mod fs;
 pub mod history;
+pub mod keys;
 pub mod http;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lmstudio;

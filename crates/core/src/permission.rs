@@ -143,7 +143,9 @@ impl PermissionConfig {
         // Text typed into a terminal runs as shell lines. A key token, such
         // as <Tab> or <C-m>, can start or change a line: split there too.
         if let Tool::TerminalSend { input, host } = tool {
-            for part in typed_parts(input).into_iter().flat_map(commands_in) {
+            let lines = typed_lines(input, true).unwrap_or_default();
+
+            for part in lines.iter().flat_map(|line| commands_in(line)) {
                 let bash = Tool::Bash { command: part };
                 let typed = Tool::TerminalSend {
                     input: part,
@@ -285,39 +287,45 @@ fn with_command<'a>(tool: &Tool<'a>, command: &'a str) -> Tool<'a> {
     }
 }
 
-/// Text and lines of TerminalSend input, split at each key token such as
-/// `<Enter>` or `<Tab>` and at each line break.
-fn typed_parts(input: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut rest = input;
+/// TerminalSend input as the terminal gets it, cut into parts at each
+/// key and line break. With `cut_at_edit_keys`, an edit key such as `<Tab>`
+/// cuts too; without it, an edit key gives `None`.
+fn typed_lines(input: &str, cut_at_edit_keys: bool) -> Option<Vec<String>> {
+    use crate::keys::{Key, keys};
 
-    while let Some(start) = rest.find('<') {
-        parts.push(&rest[..start]);
-        rest = match rest[start..].find('>') {
-            Some(end) => &rest[start + end + 1..],
-            None => &rest[start + 1..],
-        };
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    for key in keys(input) {
+        match key {
+            Key::Text(text) => line.push_str(text),
+            Key::Lt => line.push('<'),
+            Key::LineEnd(_) => lines.push(std::mem::take(&mut line)),
+            Key::Edit(_) if cut_at_edit_keys => lines.push(std::mem::take(&mut line)),
+            Key::Edit(_) => return None,
+        }
     }
-    parts.push(rest);
+    lines.push(line);
 
-    parts
-        .into_iter()
-        .flat_map(|part| part.split(['\n', '\r']))
-        .filter(|part| !part.trim().is_empty())
-        .collect()
+    Some(
+        lines
+            .iter()
+            .flat_map(|line| line.split(['\n', '\r']))
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 impl PermissionConfig {
     /// Whether prefix rules allow each line of TerminalSend input. The
-    /// lines are the text between `<Enter>` and line breaks. Another key
-    /// token stays in its line, and its `<` makes the line ask: `<Up>` or
-    /// `<Tab>` can make the shell run a line that is not the text.
+    /// lines end at `<Enter>`, `<C-m>`, `<C-j>` and line breaks. An edit
+    /// key, such as `<Up>` or `<C-a>`, makes ccrs ask: the shell can then
+    /// run a line that is not the text.
     fn typed_lines_allowed(&self, input: &str) -> bool {
-        let lines: Vec<&str> = input
-            .split("<Enter>")
-            .flat_map(|chunk| chunk.split(['\n', '\r']))
-            .filter(|line| !line.trim().is_empty())
-            .collect();
+        let Some(lines) = typed_lines(input, false) else {
+            return false;
+        };
 
         !lines.is_empty()
             && lines.iter().all(|line| {
@@ -703,6 +711,33 @@ mod tests {
             extra.join("link/new-file"),
         ] {
             assert_eq!(write(path.clone()), None, "{} was allowed", path.display());
+        }
+    }
+
+    #[test]
+    fn the_deny_check_reads_typed_text_as_the_terminal_gets_it() {
+        let c = config(&["TerminalSend(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+        let send = |input| c.check(&Tool::TerminalSend { input, host: false }, p);
+
+        // "<z ... >" is not a key: the terminal gets it as text, with its
+        // newlines, and runs rm.
+        assert_eq!(send("x <z\nrm -rf ~\n>"), Some(false));
+        assert_eq!(send("echo <b>\nrm x<Enter>"), Some(false));
+        // A real key still splits.
+        assert_eq!(send("ls<Tab>rm x"), Some(false));
+        assert_eq!(send("echo a<lt>b<Enter>"), Some(true));
+    }
+
+    #[test]
+    fn an_edit_key_makes_a_prefix_rule_ask() {
+        let c = config(&["TerminalSend(ls:*)"], &[]);
+        let p = Path::new("/project");
+        let send = |input| c.check(&Tool::TerminalSend { input, host: false }, p);
+
+        assert_eq!(send("ls x<Enter>"), Some(true));
+        for input in ["ls x<C-a>rm -rf ~ #<Enter>", "ls<Left><BS><Enter>", "ls<Esc><Enter>"] {
+            assert_eq!(send(input), None, "{input:?} was allowed");
         }
     }
 

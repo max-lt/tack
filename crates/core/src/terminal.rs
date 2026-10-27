@@ -317,58 +317,13 @@ fn unknown(id: u32) -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, format!("no open terminal {id}"))
 }
 
-/// Turn the model's input into bytes. `<Enter>`, `<Tab>`, `<Esc>`, `<BS>`,
-/// `<Up>`, `<Down>`, `<Left>`, `<Right>` and `<C-x>` are keys; `<lt>` is a
-/// literal `<`. Any other text is sent as is.
+/// Turn the model's input into bytes, with [`crate::keys::keys`]: the
+/// permission check reads the input with the same parser.
 pub fn parse_keys(input: &str) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let mut rest = input;
-
-    while let Some(start) = rest.find('<') {
-        bytes.extend_from_slice(&rest.as_bytes()[..start]);
-        rest = &rest[start..];
-
-        let key = rest[1..].find('>').map(|end| &rest[1..=end]);
-
-        match key.and_then(key_bytes) {
-            Some(key_bytes) => {
-                bytes.extend_from_slice(&key_bytes);
-                rest = &rest[key.unwrap().len() + 2..];
-            }
-            None => {
-                bytes.push(b'<');
-                rest = &rest[1..];
-            }
-        }
-    }
-
-    bytes.extend_from_slice(rest.as_bytes());
-    bytes
-}
-
-fn key_bytes(name: &str) -> Option<Vec<u8>> {
-    let bytes: &[u8] = match name {
-        "Enter" => b"\r",
-        "Tab" => b"\t",
-        "Esc" => b"\x1b",
-        "BS" => b"\x7f",
-        "Up" => b"\x1b[A",
-        "Down" => b"\x1b[B",
-        "Right" => b"\x1b[C",
-        "Left" => b"\x1b[D",
-        "lt" => b"<",
-        _ => {
-            let letter = name.strip_prefix("C-")?;
-            let [c] = letter.as_bytes() else {
-                return None;
-            };
-            return c
-                .is_ascii_alphabetic()
-                .then(|| vec![c.to_ascii_lowercase() - b'a' + 1]);
-        }
-    };
-
-    Some(bytes.to_vec())
+    crate::keys::keys(input)
+        .into_iter()
+        .flat_map(crate::keys::Key::bytes)
+        .collect()
 }
 
 #[cfg(test)]
