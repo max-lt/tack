@@ -41,7 +41,7 @@ On first launch, authenticate via **OAuth** (browser) or **API key** (`sk-ant-..
 
 Then type your messages at the `>` prompt. Claude streams responses and uses tools as needed, asking permission before executing.
 
-`ANTHROPIC_API_KEY`, when set, takes priority over the saved credentials. `ANTHROPIC_BASE_URL` points `ccrs` at another server for the Anthropic models, for example a proxy. The API key goes to that server. The URL must use https; plain http is allowed only to `localhost`, `127.0.0.1` or `::1`. `ccrs` refuses another URL before it sends a request.
+`ANTHROPIC_API_KEY`, when set, takes priority over the saved credentials. `ANTHROPIC_BASE_URL` points `ccrs` at another server for the Anthropic models, for example a proxy. The API key goes to that server. The URL must use https; plain http is allowed only to `localhost`, `127.0.0.1` or `::1`. `ccrs` refuses another URL before it sends a request. `ccrs` reads `ANTHROPIC_BASE_URL` only from the environment, never from a `.env` file: a `.env` file comes with the project, and a cloned repo could send the key to its own server. When the variable is set, `ccrs` prints the API host at start.
 
 | Flag | Description |
 |------|-------------|

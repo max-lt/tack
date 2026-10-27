@@ -110,11 +110,18 @@ async fn get_access_token(creds: &Credentials) -> Result<(String, bool, Option<C
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env from the working directory upwards. Absent file is not an
-    // error: the keys may already be exported.
-    let _ = dotenvy::dotenv();
+    load_dotenv();
 
     let cli = Cli::parse();
+
+    // The key goes to this host: say so when it is not the default.
+    if let Ok(url) = std::env::var("ANTHROPIC_BASE_URL")
+        && let Ok(parsed) = reqwest::Url::parse(url.trim())
+        && let Some(host) = parsed.host_str()
+    {
+        let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+        eprintln!("API host: {host}{port} (from ANTHROPIC_BASE_URL)");
+    }
 
     // SIGTERM and SIGHUP end the process without unwinding. Monitors run in
     // their own process groups, so they would not get the signal.
@@ -293,6 +300,31 @@ async fn start_crosstalk(id: &str) -> Result<Arc<claude_code_core::crosstalk::Cl
     let client = claude_code_core::crosstalk::Client::new(id)?;
     client.start().await?;
     Ok(Arc::new(client))
+}
+
+/// Variables that a .env file must not set. A .env file comes with the
+/// project, maybe a cloned repo, and the API key goes to this host.
+const NOT_FROM_DOTENV: &[&str] = &["ANTHROPIC_BASE_URL"];
+
+/// Load .env from the working directory upwards. A variable that the
+/// process has already keeps its value. An absent file is not an error.
+fn load_dotenv() {
+    let Ok(vars) = dotenvy::dotenv_iter() else {
+        return;
+    };
+
+    for (name, value) in vars.flatten() {
+        if NOT_FROM_DOTENV.contains(&name.as_str()) {
+            eprintln!("ccrs: ignored {name} from a .env file; set it in the environment");
+            continue;
+        }
+
+        if std::env::var_os(&name).is_none() {
+            // SAFETY: main calls this first, before it starts a task or a
+            // thread that reads the environment.
+            unsafe { std::env::set_var(&name, value) };
+        }
+    }
 }
 
 /// Resolve `--resume [ID]` / `--continue` to a saved session, if requested.
