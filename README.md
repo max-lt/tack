@@ -139,6 +139,8 @@ Create `.claude/settings.local.json` in your project:
 **Require permission:**
 - `Bash` commands (unless explicitly allowed)
 - `TerminalOpen`, `TerminalSend`, `Monitor` — rules: `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
+- A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`.
+- No allow rule covers `Monitor` or `TerminalOpen` with `host: true`. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
 - `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
 - `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
 

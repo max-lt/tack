@@ -114,6 +114,15 @@ impl PermissionConfig {
             return Some(false);
         }
 
+        // Monitor and TerminalOpen run their command with bash, so a Bash
+        // deny rule covers that command too.
+        if let Tool::Monitor { command, .. } | Tool::TerminalOpen { command, .. } = tool {
+            let bash = Tool::Bash { command };
+            if self.deny.iter().any(|r| rule_matches(r, &bash)) {
+                return Some(false);
+            }
+        }
+
         // Changes from a sandbox are a set of writes: a deny rule on any of
         // them refuses the set. No rule allows them without asking.
         if let Tool::ApplyChanges { changes, .. } = tool {
@@ -126,8 +135,15 @@ impl PermissionConfig {
             return denied.then_some(false);
         }
 
+        // A run on the host leaves the sandbox. Rules are written for the
+        // sandbox, so no allow rule covers it: the user is asked.
+        let on_host = matches!(
+            tool,
+            Tool::Monitor { host: true, .. } | Tool::TerminalOpen { host: true, .. }
+        );
+
         // Check explicit allow rules
-        if self.allow.iter().any(|r| rule_matches(r, tool)) {
+        if !on_host && self.allow.iter().any(|r| rule_matches(r, tool)) {
             return Some(true);
         }
 
@@ -289,6 +305,43 @@ mod tests {
     fn test_pattern_matches_exact() {
         assert!(pattern_matches("exact", "exact"));
         assert!(!pattern_matches("exact2", "exact"));
+    }
+
+    fn config(allow: &[&str], deny: &[&str]) -> PermissionConfig {
+        PermissionConfig {
+            allow: allow.iter().map(|r| r.to_string()).collect(),
+            deny: deny.iter().map(|r| r.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_allow_rule_never_covers_a_run_on_the_host() {
+        let c = config(&["Monitor(tail:*)", "TerminalOpen(psql:*)"], &[]);
+        let p = Path::new("/project");
+        let monitor = |host| Tool::Monitor { command: "tail -n 200 ~/.aws/credentials", host };
+        let terminal = |host| Tool::TerminalOpen { command: "psql prod", host };
+
+        assert_eq!(c.check(&monitor(false), p), Some(true));
+        assert_eq!(c.check(&monitor(true), p), None);
+        assert_eq!(c.check(&terminal(false), p), Some(true));
+        assert_eq!(c.check(&terminal(true), p), None);
+    }
+
+    #[test]
+    fn a_bash_deny_rule_denies_the_command_in_monitor_and_terminal_open() {
+        let c = config(&["Monitor(*)", "TerminalOpen(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+
+        for host in [false, true] {
+            let monitor = Tool::Monitor { command: "rm -rf build", host };
+            let terminal = Tool::TerminalOpen { command: "rm -rf build", host };
+            assert_eq!(c.check(&monitor, p), Some(false), "monitor host={host}");
+            assert_eq!(c.check(&terminal, p), Some(false), "terminal host={host}");
+        }
+
+        let safe = Tool::Monitor { command: "tail -F log", host: false };
+        assert_eq!(c.check(&safe, p), Some(true));
     }
 
     #[test]
