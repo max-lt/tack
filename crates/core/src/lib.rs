@@ -7,6 +7,7 @@ pub mod config;
 pub mod crosstalk;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod egress;
+pub mod escape;
 pub mod event;
 pub mod fs;
 pub mod history;
