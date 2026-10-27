@@ -48,7 +48,17 @@ pub(crate) fn make_private(dir: &Path) -> std::io::Result<()> {
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // The owner of the directory can read and swap what ccrs stores.
+        // SAFETY: geteuid takes no argument and cannot fail.
+        if fs::metadata(dir)?.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::other(format!(
+                "{} belongs to another user; ccrs does not store data there",
+                dir.display()
+            )));
+        }
+
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
@@ -156,6 +166,34 @@ fn load_settings_file(path: &Path) -> Option<Settings> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_of_another_user_is_refused_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let before = fs::metadata("/usr").unwrap().permissions().mode();
+        let err = make_private(Path::new("/usr")).unwrap_err();
+
+        assert!(err.to_string().contains("belongs to another user"), "{err}");
+        assert_eq!(fs::metadata("/usr").unwrap().permissions().mode(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_others_can_write_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("d");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+
+        make_private(&dir).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
     use super::*;
     use crate::permission::Tool;
 
