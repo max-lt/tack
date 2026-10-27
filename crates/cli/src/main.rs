@@ -215,6 +215,9 @@ async fn main() -> Result<()> {
         (None, None) => history::new_id(),
     };
 
+    // Held until exit: a second ccrs on this id would erase our turns.
+    let _lock = history::lock(&id)?;
+
     let mut builder = SessionBuilder::new(access_token, is_oauth).id(id.clone());
 
     // One crosstalk daemon per session id: a resumed session keeps its

@@ -86,6 +86,54 @@ pub fn find(id: &str) -> Result<Option<StoredSession>> {
     load(id).map(Some)
 }
 
+/// Held while a process has the session open. Another process cannot
+/// open it, or else the last one to save would erase the turns of the
+/// other.
+pub struct SessionLock {
+    #[cfg(unix)]
+    _file: fs::File,
+}
+
+pub fn lock(id: &str) -> Result<SessionLock> {
+    lock_in(&sessions_dir()?, id)
+}
+
+fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
+    let path = session_path(dir, id)?.with_extension("lock");
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .context("Failed to open the session lock")?;
+
+        // SAFETY: the descriptor is open for as long as `file` lives.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                bail!("Session {id} is open in another ccrs process");
+            }
+            return Err(error).context("Failed to lock the session");
+        }
+
+        Ok(SessionLock { _file: file })
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(SessionLock {})
+    }
+}
+
 /// Saved sessions started from `cwd`, most recent first.
 pub fn list(cwd: &Path) -> Result<Vec<SessionSummary>> {
     list_in(&sessions_dir()?, cwd)
@@ -413,6 +461,24 @@ mod tests {
 
         assert!(reads > 0);
         load_from(&dir, "1").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_is_open_in_one_process_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let first = lock_in(tmp.path(), "1").unwrap();
+        let err = lock_in(tmp.path(), "1").err().expect("second lock taken");
+        assert!(err.to_string().contains("open in another ccrs process"), "{err}");
+
+        // Another id is free, and the id is free again once released.
+        lock_in(tmp.path(), "2").unwrap();
+        drop(first);
+        lock_in(tmp.path(), "1").unwrap();
+
+        assert!(lock_in(tmp.path(), "../x").is_err());
+        assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
     }
 
     #[test]
