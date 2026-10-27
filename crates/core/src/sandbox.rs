@@ -49,13 +49,15 @@ pub trait Sandbox: Send + Sync {
         None
     }
 
-    /// How to start an interactive terminal for `command`. By default it
-    /// runs on the host, in the workspace.
+    /// How to start a long-running `command`: under a PTY for a terminal
+    /// (`tty`), or with plain pipes for a monitor. By default it runs on the
+    /// host, in the workspace.
     #[cfg(not(target_arch = "wasm32"))]
     fn terminal<'a>(
         &'a self,
         command: &'a str,
         _workspace: &'a Path,
+        _tty: bool,
     ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
         Box::pin(std::future::ready(Ok(host_terminal(command))))
     }
@@ -77,13 +79,13 @@ pub trait Sandbox: Send + Sync {
     }
 }
 
-/// A program to start under a PTY.
+/// A program to start, under a PTY or with pipes.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct TerminalPlan {
     pub program: String,
     pub args: Vec<String>,
-    /// Held while the terminal is open. Dropping it tells the sandbox the
-    /// terminal is gone.
+    /// Held while the program runs. Dropping it tells the sandbox the
+    /// program is gone.
     pub lease: Option<Box<dyn Send + Sync>>,
 }
 
@@ -528,11 +530,12 @@ mod apple {
             &'a self,
             command: &'a str,
             workspace: &'a Path,
+            tty: bool,
         ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
             Box::pin(async move {
                 let lease = Lease::new(&self.inner);
                 let (name, env) = self.ready(workspace).await?;
-                let mut args = Self::exec_args(&name, &env, true);
+                let mut args = Self::exec_args(&name, &env, tty);
 
                 if !command.trim().is_empty() {
                     args.extend(["-c".to_string(), command.to_string()]);

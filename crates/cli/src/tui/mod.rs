@@ -666,6 +666,8 @@ impl App {
                 });
             }
 
+            UiEvent::Monitor(event) => self.deliver_notice(event.notice()),
+
             #[cfg(feature = "crosstalk")]
             UiEvent::Crosstalk(raw) => self.crosstalk_events(raw),
 
@@ -741,8 +743,11 @@ impl App {
             return;
         }
 
-        let notice = crosstalk::notice(&others);
+        self.deliver_notice(crosstalk::notice(&others));
+    }
 
+    /// Hand a notice to the model: now if idle, after the turn if busy.
+    fn deliver_notice(&mut self, notice: String) {
         if self.state.is_busy() {
             self.queue.push_back(notice);
         } else {
@@ -985,7 +990,7 @@ async fn session_loop(
 
 pub fn run(
     cwd: PathBuf,
-    session: Session<Box<dyn PermissionHandler>>,
+    mut session: Session<Box<dyn PermissionHandler>>,
     restored: Vec<DisplayMessage>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -995,6 +1000,17 @@ pub fn run(
     // A resumed session starts with the size it had when it was saved.
     let context_used = session.context_used();
     let resume_note = session.resume_note().map(str::to_string);
+
+    if let Some(mut events) = session.take_monitor_events() {
+        let tx = ui_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                if tx.send(UiEvent::Monitor(event)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let app_ui_tx = ui_tx.clone();
 
     // Channel for UI → session commands

@@ -13,6 +13,8 @@ pub mod history;
 pub mod http;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lmstudio;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod monitor;
 pub mod openai;
 pub mod permission;
 pub mod provider;

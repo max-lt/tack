@@ -97,6 +97,10 @@ impl PermissionHandler for ChannelPermissions {
                     false => format!("Open a terminal{place} running: {command}"),
                 }
             }
+            Tool::Monitor { command, host } => {
+                let place = if *host { " ON THIS MACHINE" } else { "" };
+                format!("Monitor{place} the output of: {command}")
+            }
             Tool::TerminalSend { input } => format!("Type into a terminal: {input}"),
             Tool::Crosstalk { action, peer, text } => match *action {
                 "send" => format!("Crosstalk: send to {peer}:\n  {text}"),

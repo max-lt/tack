@@ -9,6 +9,8 @@ pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod list;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod monitor;
 pub mod read;
 #[cfg(feature = "search")]
 pub mod search;
@@ -163,6 +165,7 @@ pub fn default_registry(
     caps: &Capabilities,
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] store: &SharedStore,
     #[cfg(not(target_arch = "wasm32"))] terminals: std::sync::Arc<crate::terminal::Terminals>,
+    #[cfg(not(target_arch = "wasm32"))] monitors: std::sync::Arc<crate::monitor::Monitors>,
 ) -> ToolRegistry {
     let mut r = ToolRegistry::new();
 
@@ -186,6 +189,11 @@ pub fn default_registry(
         r.register(send);
         r.register(read);
         r.register(close);
+
+        let (monitor, list, stop) = monitor::tools(monitors, caps.sandbox.clone());
+        r.register(monitor);
+        r.register(list);
+        r.register(stop);
     }
 
     #[cfg(feature = "git")]
@@ -270,6 +278,12 @@ pub fn to_permission_tool<'a>(
             Some(permission::Tool::TerminalSend { input: keys })
         }
         "TerminalRead" | "TerminalClose" => Some(permission::Tool::TerminalWatch),
+        "Monitor" => {
+            let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            let host = input.get("host").and_then(|h| h.as_bool()).unwrap_or(false);
+            Some(permission::Tool::Monitor { command, host })
+        }
+        "MonitorList" | "MonitorStop" => Some(permission::Tool::MonitorWatch),
         "CrosstalkWhoami" | "CrosstalkPeers" => Some(permission::Tool::CrosstalkWatch),
         "CrosstalkSend" | "CrosstalkConnect" | "CrosstalkForget" => {
             let field = |key| input.get(key).and_then(|v| v.as_str()).unwrap_or("");

@@ -25,6 +25,11 @@ pub enum Tool<'a> {
     TerminalSend { input: &'a str },
     /// Read or close an open terminal.
     TerminalWatch,
+    /// Start a background command whose output wakes the model. `host`
+    /// asks to run it outside the sandbox.
+    Monitor { command: &'a str, host: bool },
+    /// List or stop monitors.
+    MonitorWatch,
     /// Send to, pair with or drop a crosstalk peer: it leaves the machine.
     /// `text` is the message, or the description sent with a pairing.
     Crosstalk {
@@ -128,7 +133,7 @@ impl PermissionConfig {
 
         // Read-only tools are always allowed
         match tool {
-            Tool::Glob | Tool::Grep | Tool::List | Tool::Search | Tool::TerminalWatch | Tool::CrosstalkWatch => {
+            Tool::Glob | Tool::Grep | Tool::List | Tool::Search | Tool::TerminalWatch | Tool::MonitorWatch | Tool::CrosstalkWatch => {
                 return Some(true);
             }
             Tool::Git { subcommand } => {
@@ -182,6 +187,7 @@ fn rule_matches(rule: &str, tool: &Tool<'_>) -> bool {
         ("Git", Tool::Git { subcommand }) => pattern_matches(subcommand, pattern),
         ("TerminalOpen", Tool::TerminalOpen { command, .. }) => pattern_matches(command, pattern),
         ("TerminalSend", Tool::TerminalSend { input }) => pattern_matches(input, pattern),
+        ("Monitor", Tool::Monitor { command, .. }) => pattern_matches(command, pattern),
         ("Crosstalk", Tool::Crosstalk { action, peer, .. }) => {
             pattern_matches(&format!("{action} {peer}"), pattern)
         }

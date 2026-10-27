@@ -44,6 +44,11 @@ pub struct Session<P: PermissionHandler> {
     store: SharedStore,
     #[cfg(not(target_arch = "wasm32"))]
     terminals: Arc<crate::terminal::Terminals>,
+    #[cfg(not(target_arch = "wasm32"))]
+    monitors: Arc<crate::monitor::Monitors>,
+    /// Taken once by whoever delivers monitor output to the model.
+    #[cfg(not(target_arch = "wasm32"))]
+    monitor_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::monitor::MonitorEvent>>,
     /// What a resume lost, told to the model with the next message.
     resume_note: Option<String>,
 }
@@ -162,7 +167,7 @@ impl SessionBuilder {
                 ""
             },
             terminal_tool_line = if cfg!(not(target_arch = "wasm32")) {
-                "\n             - **TerminalOpen/Send/Read/Close**: Interactive terminals that keep running between calls (REPLs, dev servers, TUIs). They run where Bash runs; `host: true` runs one on the user's machine."
+                "\n             - **TerminalOpen/Send/Read/Close**: Interactive terminals that keep running between calls (REPLs, dev servers, TUIs). They run where Bash runs; `host: true` runs one on the user's machine.\n             - **Monitor/MonitorList/MonitorStop**: Run a command in the background and get woken by each line it prints (watch a log, wait for a build). Filter in the command so only useful lines come out."
             } else {
                 ""
             },
@@ -195,6 +200,8 @@ impl SessionBuilder {
         let store = SharedStore::default();
         #[cfg(not(target_arch = "wasm32"))]
         let terminals = Arc::new(crate::terminal::Terminals::default());
+        #[cfg(not(target_arch = "wasm32"))]
+        let (monitors, monitor_events) = crate::monitor::Monitors::new(store.clone());
 
         #[allow(unused_mut)]
         let mut tools = tools::default_registry(
@@ -202,6 +209,8 @@ impl SessionBuilder {
             &store,
             #[cfg(not(target_arch = "wasm32"))]
             terminals.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            monitors.clone(),
         );
 
         #[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
@@ -229,6 +238,10 @@ impl SessionBuilder {
             store,
             #[cfg(not(target_arch = "wasm32"))]
             terminals,
+            #[cfg(not(target_arch = "wasm32"))]
+            monitors,
+            #[cfg(not(target_arch = "wasm32"))]
+            monitor_events: Some(monitor_events),
             resume_note: None,
         })
     }
@@ -293,10 +306,56 @@ impl<P: PermissionHandler> Session<P> {
 
         // Ids already in the conversation must not name a new terminal.
         #[cfg(not(target_arch = "wasm32"))]
-        self.terminals.reserve(store.last_terminal_id());
+        {
+            self.terminals.reserve(store.last_terminal_id());
+            self.monitors.reserve(store.last_monitor_id());
+        }
 
         self.resume_note = store.take_lost();
         *self.store.lock().unwrap() = store;
+    }
+
+    /// The output of this session's monitors. `None` after the first call:
+    /// one consumer delivers it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn take_monitor_events(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<crate::monitor::MonitorEvent>> {
+        self.monitor_events.take()
+    }
+
+    /// Start again the monitors a restored session had, with their ids.
+    /// Returns what happened, for the user. They were approved when first
+    /// started, so they are not asked again.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn restart_monitors(&mut self) -> Option<String> {
+        let saved = std::mem::take(&mut self.store.lock().unwrap().monitors);
+
+        if saved.is_empty() {
+            return None;
+        }
+
+        let mut note = String::from("Monitors started again:");
+
+        for m in saved {
+            let result = tools::monitor::start(
+                &self.monitors,
+                &*self.sandbox,
+                &self.cwd,
+                &m.command,
+                &m.description,
+                m.host,
+                Some(m.id),
+            )
+            .await;
+
+            match result {
+                Ok(id) => write!(note, "\n- monitor {id}: {}", m.description).unwrap(),
+                Err(e) => write!(note, "\n- monitor {} failed to start: {e}", m.id).unwrap(),
+            }
+        }
+
+        Some(note)
     }
 
     /// What the session has set up, as it would be saved.
@@ -617,6 +676,31 @@ mod tests {
         let id = s.terminals.open(plan, Path::new("/"), 10, 40).unwrap();
         assert_eq!(id, 5);
         s.terminals.close(id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_starts_saved_monitors_again_with_their_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut saved = stored(Some(1));
+        saved.store.add_monitor(crate::store::MonitorEntry {
+            id: 7,
+            command: "echo again".to_string(),
+            description: "echo".to_string(),
+            host: true,
+        });
+
+        s.restore(saved);
+        let note = s.restart_monitors().await.unwrap();
+        assert!(note.contains("monitor 7: echo"), "{note}");
+
+        let mut events = s.take_monitor_events().unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((event.id, event.lines), (7, vec!["again".to_string()]));
+        assert_eq!(s.restart_monitors().await, None);
     }
 
     #[test]

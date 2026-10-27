@@ -153,7 +153,7 @@ impl ToolDef for TerminalOpenTool {
         let plan = if host {
             host_terminal(command)
         } else {
-            match self.sandbox.terminal(command, cwd).await {
+            match self.sandbox.terminal(command, cwd, true).await {
                 Ok(plan) => plan,
                 Err(e) => return ToolOutput::error(format!("Failed to prepare terminal: {e}")),
             }

@@ -373,7 +373,7 @@ mod container_tests {
         let sandbox = AppleContainer::new("debian:bookworm-slim");
         let terminals = Terminals::default();
 
-        let plan = sandbox.terminal("", workspace.path()).await.unwrap();
+        let plan = sandbox.terminal("", workspace.path(), true).await.unwrap();
         let id = terminals.open(plan, workspace.path(), 24, 80).unwrap();
         terminals
             .read_first(id, Duration::from_secs(30))

@@ -226,6 +226,15 @@ async fn main() -> Result<()> {
         session.restore(stored);
     }
 
+    // Monitors outlive turns, not the process: a resumed session starts
+    // its monitors again. --print has nobody to deliver their output to, so
+    // it leaves them saved for the next interactive run.
+    if cli.print.is_none()
+        && let Some(note) = session.restart_monitors().await
+    {
+        restored.push(tui::DisplayMessage::Info(note));
+    }
+
     if let Some(prompt) = prompt {
         let result = print::run(session, &prompt).await;
 
