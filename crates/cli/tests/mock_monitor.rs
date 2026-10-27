@@ -113,8 +113,9 @@ fn text_reply(text: &str) -> String {
     )
 }
 
-/// A temporary HOME and project. The project allows `Monitor(echo:*)`, so
-/// -p starts the monitor with no prompt and no --auto.
+/// A temporary HOME and project. The project allows `Monitor(*)`, so -p
+/// starts the monitor with no prompt and no --auto. A prefix rule does not
+/// cover the test command: it holds `$`, `>` and `;`.
 struct Sandbox {
     root: tempfile::TempDir,
 }
@@ -126,7 +127,7 @@ impl Sandbox {
         std::fs::create_dir_all(root.path().join("project/.claude")).unwrap();
         std::fs::write(
             root.path().join("project/.claude/settings.json"),
-            r#"{ "permissions": { "allow": ["Monitor(echo:*)"] } }"#,
+            r#"{ "permissions": { "allow": ["Monitor(*)"] } }"#,
         )
         .unwrap();
         Self { root }
