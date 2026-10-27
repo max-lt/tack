@@ -999,7 +999,9 @@ async fn session_loop(
 
             SessionCmd::Clear => {
                 if let Err(e) = session.clear() {
-                    let _ = ui_tx.send(UiEvent::Error(format!("{e:#}")));
+                    let _ = ui_tx.send(UiEvent::Error(format!(
+                        "/clear failed, and the conversation goes on (only the screen was cleared): {e:#}"
+                    )));
                 }
 
                 // The fresh session has no file yet: nothing to hint at.

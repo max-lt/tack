@@ -273,12 +273,19 @@ impl<P: PermissionHandler> Session<P> {
     }
 
     /// Start a new conversation with a new id. With a lock, the new id is
-    /// locked and the old one released; an error means the new id is not
-    /// locked, and the conversation is cleared all the same.
+    /// locked first and the old one released. When the new lock fails,
+    /// nothing changes: a cleared conversation under the old id would
+    /// replace the old file at the next save.
     ///
     /// The monitors of the old conversation stop. Its session file keeps
     /// them, so a resume of it offers to start them again.
     pub fn clear(&mut self) -> Result<()> {
+        let id = history::new_id();
+
+        if let Some(lock) = &mut self.lock {
+            lock.relock(&id)?;
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.monitors.stop_all();
@@ -287,14 +294,11 @@ impl<P: PermissionHandler> Session<P> {
 
         self.messages.truncate(self.bootstrap_len);
         // The old conversation stays on disk and remains resumable.
-        self.id = history::new_id();
+        self.id = id;
         self.context_used = 0;
         self.resume_note = None;
 
-        match &mut self.lock {
-            Some(lock) => lock.relock(&self.id),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
     /// Hold `lock` for as long as the session lives, and move it to the new
@@ -1173,6 +1177,29 @@ mod tests {
         assert!(!host_of(2));
         // An unknown terminal is treated as one on the host.
         assert!(host_of(9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_clear_whose_new_lock_fails_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session();
+        s.restore(stored(Some(1)));
+        let old = s.id().to_string();
+        s.hold_lock(history::lock_in(dir.path(), &old).unwrap());
+        let messages = s.messages().len();
+
+        // The new lock file cannot be made.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = s.clear();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(result.is_err());
+        assert_eq!(s.id(), old);
+        assert_eq!(s.messages().len(), messages, "the conversation was cleared");
+        assert!(history::lock_in(dir.path(), &old).is_err(), "the old id lost its lock");
     }
 
     #[test]
