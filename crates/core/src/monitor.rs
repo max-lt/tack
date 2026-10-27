@@ -27,6 +27,8 @@ const MAX_LINES: usize = 100;
 pub const MAX_EVENTS_PER_MINUTE: usize = 10;
 /// Most events all monitors of one session send in a minute.
 pub const MAX_SESSION_EVENTS_PER_MINUTE: usize = 20;
+/// Most bytes of output in one event, after the escape: about 4k tokens.
+pub const MAX_EVENT_BYTES: usize = 16 * 1024;
 /// Longest monitor description, in bytes. It goes into every notice of
 /// the monitor.
 pub const MAX_DESCRIPTION: usize = 200;
@@ -266,6 +268,7 @@ impl Monitors {
                     });
                 };
 
+                let mut size = first.len();
                 let mut collected = vec![first];
                 let mut dropped = 0;
 
@@ -282,7 +285,8 @@ impl Monitors {
                         break;
                     };
 
-                    if collected.len() < MAX_LINES {
+                    if collected.len() < MAX_LINES && size + line.len() <= MAX_EVENT_BYTES {
+                        size += line.len();
                         collected.push(line);
                     } else {
                         dropped += 1;
@@ -615,7 +619,20 @@ fn finish(bytes: &[u8], clipped: bool) -> String {
         bytes = &bytes[..e.valid_up_to()];
     }
 
-    let mut text = escape(&String::from_utf8_lossy(bytes));
+    // Clip after the escape: an escaped character takes up to 9 bytes.
+    let mut text = String::new();
+    let mut clipped = clipped;
+
+    for c in String::from_utf8_lossy(bytes).chars() {
+        let piece = escape(c.encode_utf8(&mut [0; 4]));
+
+        if text.len() + piece.len() > MAX_LINE {
+            clipped = true;
+            break;
+        }
+
+        text.push_str(&piece);
+    }
 
     if clipped {
         text.push('…');
@@ -1245,6 +1262,30 @@ mod tests {
             "a\\u{e0068}\\u{e0069}b\\u{202e}c\\u{200b}d\\u{feff}e\\u{ad}f\\u{2028}g"
         );
         assert_eq!(escape("plain café\ttab"), "plain café\ttab");
+    }
+
+    #[test]
+    fn a_line_stays_under_the_limit_after_escaping() {
+        let nul = finish(&[0u8; MAX_LINE], false);
+        let bad = finish(&[0xFFu8; MAX_LINE], false);
+
+        for line in [&nul, &bad] {
+            assert!(line.len() <= MAX_LINE + '…'.len_utf8(), "{} bytes", line.len());
+            assert!(line.ends_with('…'));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_event_stays_under_its_byte_limit() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        // 100 lines of 1000 bytes, all in one batch.
+        start(&monitors, "for i in $(seq 1 100); do printf 'x%.0s' $(seq 1 1000); echo; done");
+
+        let event = next(&mut rx).await;
+        let bytes: usize = event.lines.iter().map(String::len).sum();
+
+        assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes");
+        assert!(event.dropped > 0);
     }
 
     #[test]

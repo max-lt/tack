@@ -164,7 +164,8 @@ The `Monitor` tool runs a command in the background. Each line that the command 
 | Events per minute, per monitor | 10 | The monitor stops. Its last event gives the reason to the model. |
 | Events per minute, all monitors of a session | 20 | The monitor that goes over the limit stops. Its last lines are not sent. |
 | Lines in one event | 100 | The event tells how many lines it dropped. |
-| Bytes in one line | 1000 | The line is cut and ends with an ellipsis (U+2026). |
+| Bytes of output in one event, after the escape | 16384 | The event tells how many lines it dropped. |
+| Bytes in one line, after the escape | 1000 | The line is cut and ends with an ellipsis (U+2026). |
 
 Lines that come less than 300 ms apart go into one event. An event stays open for 2 s or less.
 
