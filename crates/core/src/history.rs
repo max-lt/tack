@@ -82,6 +82,10 @@ pub fn new_id() -> String {
 pub fn sessions_dir() -> Result<PathBuf> {
     let dir = config::config_dir()?.join("sessions");
     make_private(&dir).context("Failed to create sessions directory")?;
+
+    static CLEANED: std::sync::Once = std::sync::Once::new();
+    CLEANED.call_once(|| remove_stale_tmp(&dir));
+
     Ok(dir)
 }
 
@@ -209,6 +213,54 @@ fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
     written?;
 
     Ok(())
+}
+
+/// Remove the temporary files of saves whose process is gone: a process
+/// killed between the write and the rename leaves one. The name holds the
+/// pid, `<id>.<pid>.<n>.tmp`. A file whose process runs, or whose name
+/// does not match, stays.
+fn remove_stale_tmp(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".tmp"))
+            .and_then(|n| n.split('.').nth(1))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+
+        if !process_is_gone(pid) {
+            continue;
+        }
+
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
+#[cfg(unix)]
+fn process_is_gone(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+
+    // SAFETY: signal 0 only checks that the pid exists.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return false;
+    }
+
+    // EPERM means the pid exists and belongs to another user.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn process_is_gone(_pid: u32) -> bool {
+    false
 }
 
 /// Write a new file that only the owner can read.
@@ -678,6 +730,31 @@ mod tests {
         assert_eq!(fs::read(dir.join("1.json")).unwrap(), before);
         assert!(tmp_files(&dir).is_empty(), "{:?}", tmp_files(&dir));
         assert!(load_from(&dir, "1").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_temporary_files_go_and_live_ones_stay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dead = {
+            let mut child = std::process::Command::new("true").spawn().unwrap();
+            let pid = child.id();
+            child.wait().unwrap();
+            pid
+        };
+        let live = std::process::id();
+
+        let stale = format!("1.{dead}.0.tmp");
+        let mine = format!("1.{live}.0.tmp");
+        for name in [&stale, &mine, &"notes.tmp".to_string()] {
+            fs::write(tmp.path().join(name), "x").unwrap();
+        }
+
+        remove_stale_tmp(tmp.path());
+
+        let mut left = tmp_files(tmp.path());
+        left.sort();
+        assert_eq!(left, [mine, "notes.tmp".to_string()]);
     }
 
     #[test]
