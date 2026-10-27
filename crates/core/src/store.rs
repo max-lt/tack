@@ -110,8 +110,16 @@ impl Store {
         );
 
         for t in self.terminals.drain(..) {
-            let place = if t.host { " (on the user's machine)" } else { "" };
-            let command = if t.command.is_empty() { "bash" } else { &t.command };
+            let place = if t.host {
+                " (on the user's machine)"
+            } else {
+                ""
+            };
+            let command = if t.command.is_empty() {
+                "bash"
+            } else {
+                &t.command
+            };
             note.push_str(&format!("\n- terminal {}{place}: {command}", t.id));
         }
 

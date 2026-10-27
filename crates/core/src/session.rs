@@ -470,7 +470,11 @@ impl<P: PermissionHandler> Session<P> {
 
     /// The permission request for a tool call. For TerminalSend, `host`
     /// comes from the store: the input names only the terminal id.
-    pub fn permission_tool<'a>(&self, name: &str, input: &'a serde_json::Value) -> Option<Tool<'a>> {
+    pub fn permission_tool<'a>(
+        &self,
+        name: &str,
+        input: &'a serde_json::Value,
+    ) -> Option<Tool<'a>> {
         match tools::to_permission_tool(name, input)? {
             Tool::TerminalSend { input: keys, .. } => {
                 let id = input.get("id").and_then(serde_json::Value::as_u64);
@@ -1129,7 +1133,10 @@ mod tests {
 
         let mut gone = false;
         for _ in 0..50 {
-            let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap();
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap();
             if !alive.success() {
                 gone = true;
                 break;
@@ -1144,11 +1151,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = session_in(dir.path(), AllowAll);
         for (id, host) in [(1, true), (2, false)] {
-            s.store.lock().unwrap().add_terminal(crate::store::TerminalEntry {
-                id,
-                command: String::new(),
-                host,
-            });
+            s.store
+                .lock()
+                .unwrap()
+                .add_terminal(crate::store::TerminalEntry {
+                    id,
+                    command: String::new(),
+                    host,
+                });
         }
 
         let host_of = |id: u32| {

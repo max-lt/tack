@@ -324,7 +324,9 @@ impl Monitors {
                 // collects all along. A stop ends the monitor at once; the
                 // open batch is dropped.
                 let opened = tokio::time::Instant::now();
-                let hold_until = last_sent.map(|sent| sent + debounce).filter(|until| *until > opened);
+                let hold_until = last_sent
+                    .map(|sent| sent + debounce)
+                    .filter(|until| *until > opened);
                 let deadline = (opened + MAX_BATCH).max(hold_until.unwrap_or(opened));
 
                 loop {
@@ -1615,7 +1617,14 @@ mod tests {
                 )
                 .unwrap();
 
-            let entry = store.lock().unwrap().monitors.iter().find(|m| m.id == id).cloned().unwrap();
+            let entry = store
+                .lock()
+                .unwrap()
+                .monitors
+                .iter()
+                .find(|m| m.id == id)
+                .cloned()
+                .unwrap();
             assert_eq!(entry.debounce_seconds, kept);
         }
     }

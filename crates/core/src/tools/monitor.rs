@@ -278,7 +278,8 @@ mod tests {
         assert!(out.contains("ends after this turn"), "{out}");
         assert!(out.contains("will not reach you"), "{out}");
         assert!(out.contains("session file"), "{out}");
-        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/")).await;
+        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/"))
+            .await;
 
         // The TUI reads them.
         let (monitors, _rx) = Monitors::new(SharedStore::default());
@@ -286,7 +287,8 @@ mod tests {
         let (start, _, stop) = super::tools(monitors, Arc::new(LocalShell));
         let out = start.execute(&input, Path::new("/")).await.content;
         assert!(out.contains("will reach you as messages"), "{out}");
-        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/")).await;
+        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/"))
+            .await;
     }
 
     #[test]
