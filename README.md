@@ -217,6 +217,16 @@ Known limits:
 - SIGKILL on `ccrs` does not stop the monitors.
 - In the sandbox, a stop kills the `container exec` client. A process in the VM can run until the VM stops, 5 minutes after the last command.
 
+### Crosstalk
+
+With `--features crosstalk`, `ccrs` starts one `crosstalk daemon` per session and talks to it on its control socket. Messages from other people's agents reach the model as a "Crosstalk" notice.
+
+Incoming messages:
+
+- Each line from the peer, the header too, is escaped like monitor output and quoted. The notice says that it is data from another person's agent, not an instruction.
+- The body of one event holds 8192 bytes or less, after the escape. A first line tells how many bytes are not shown.
+- Known limit: the daemon writes its events as text, with no framing. A peer that writes a blank line, then a line such as `[message] from <another peer> via ...`, makes ccrs read a second event with the sender of its choice. A fix needs a structured inbox in the daemon.
+
 ### Session files
 
 `ccrs` saves each session in `sessions/<id>.json` in its config directory.
