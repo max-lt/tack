@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::{ToolDef, ToolOutput};
 use crate::sandbox::{Sandbox, host_terminal};
+use crate::store::{SharedStore, TerminalEntry};
 use crate::terminal::{Snapshot, Terminals, parse_keys};
 
 const DEFAULT_ROWS: u16 = 30;
@@ -15,6 +16,7 @@ const MAX_TIMEOUT_MS: u64 = 120_000;
 pub struct TerminalOpenTool {
     terminals: Arc<Terminals>,
     sandbox: Arc<dyn Sandbox>,
+    store: SharedStore,
 }
 
 pub struct TerminalSendTool {
@@ -28,12 +30,15 @@ pub struct TerminalReadTool {
 pub struct TerminalCloseTool {
     terminals: Arc<Terminals>,
     sandbox: Arc<dyn Sandbox>,
+    store: SharedStore,
 }
 
-/// The four tools, sharing one set of terminals.
+/// The four tools, sharing one set of terminals. Open and close keep the
+/// session's store in step.
 pub fn tools(
     terminals: Arc<Terminals>,
     sandbox: Arc<dyn Sandbox>,
+    store: SharedStore,
 ) -> (
     TerminalOpenTool,
     TerminalSendTool,
@@ -44,6 +49,7 @@ pub fn tools(
         TerminalOpenTool {
             terminals: terminals.clone(),
             sandbox: sandbox.clone(),
+            store: store.clone(),
         },
         TerminalSendTool {
             terminals: terminals.clone(),
@@ -51,7 +57,11 @@ pub fn tools(
         TerminalReadTool {
             terminals: terminals.clone(),
         },
-        TerminalCloseTool { terminals, sandbox },
+        TerminalCloseTool {
+            terminals,
+            sandbox,
+            store,
+        },
     )
 }
 
@@ -158,6 +168,12 @@ impl ToolDef for TerminalOpenTool {
             Ok(id) => id,
             Err(e) => return ToolOutput::error(format!("Failed to open terminal: {e}")),
         };
+
+        self.store.lock().unwrap().add_terminal(TerminalEntry {
+            id,
+            command: command.to_string(),
+            host,
+        });
 
         match self
             .terminals
@@ -291,6 +307,8 @@ impl ToolDef for TerminalCloseTool {
             Ok(snapshot) => snapshot,
             Err(e) => return ToolOutput::error(format!("Failed to close terminal {id}: {e}")),
         };
+
+        self.store.lock().unwrap().remove_terminal(id);
 
         let output = ToolOutput::success(format!("Closed. {}", render(id, &snapshot)));
 

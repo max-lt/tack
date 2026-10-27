@@ -23,6 +23,7 @@ use std::pin::Pin;
 use crate::capabilities::Capabilities;
 use crate::permission;
 use crate::sandbox::FileChange;
+use crate::store::SharedStore;
 
 // ---------------------------------------------------------------------------
 // Tool output
@@ -156,8 +157,13 @@ impl ToolRegistry {
     }
 }
 
-/// Create a registry with the default set of tools, bound to `caps`.
-pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
+/// Create a registry with the default set of tools, bound to `caps`. The
+/// terminal tools record what they open in `store`.
+pub fn default_registry(
+    caps: &Capabilities,
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] store: &SharedStore,
+    #[cfg(not(target_arch = "wasm32"))] terminals: std::sync::Arc<crate::terminal::Terminals>,
+) -> ToolRegistry {
     let mut r = ToolRegistry::new();
 
     // Bash needs a real OS: a wasm guest has no processes to spawn.
@@ -174,8 +180,8 @@ pub fn default_registry(caps: &Capabilities) -> ToolRegistry {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let terminals = std::sync::Arc::new(crate::terminal::Terminals::default());
-        let (open, send, read, close) = terminal::tools(terminals, caps.sandbox.clone());
+        let (open, send, read, close) =
+            terminal::tools(terminals, caps.sandbox.clone(), store.clone());
         r.register(open);
         r.register(send);
         r.register(read);

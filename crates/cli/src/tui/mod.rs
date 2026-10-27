@@ -994,6 +994,7 @@ pub fn run(
     let model = session.model().to_string();
     // A resumed session starts with the size it had when it was saved.
     let context_used = session.context_used();
+    let resume_note = session.resume_note().map(str::to_string);
     let app_ui_tx = ui_tx.clone();
 
     // Channel for UI → session commands
@@ -1045,6 +1046,9 @@ pub fn run(
 
     let mut app = App::new(cwd, model, restored, ui_rx, app_ui_tx, session_tx);
     app.context_used = context_used;
+    if let Some(note) = resume_note {
+        app.messages.push(DisplayMessage::Info(note));
+    }
     #[cfg(feature = "crosstalk")]
     {
         app.crosstalk = crosstalk;

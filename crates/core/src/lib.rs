@@ -18,6 +18,7 @@ pub mod permission;
 pub mod provider;
 pub mod sandbox;
 pub mod session;
+pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod terminal;
 pub mod tools;

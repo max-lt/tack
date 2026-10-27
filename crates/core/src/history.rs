@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::Message;
 use crate::config;
+use crate::store::Store;
 
 const PREVIEW_CHARS: usize = 80;
 
@@ -28,6 +29,9 @@ pub struct StoredSession {
     /// saved before it was recorded; the session estimates it on restore.
     #[serde(default)]
     pub context_used: Option<u64>,
+    /// What the session had set up: terminals, later monitors and schedules.
+    #[serde(default, skip_serializing_if = "Store::is_empty")]
+    pub store: Store,
 }
 
 /// What the resume picker shows for one saved session.
@@ -202,6 +206,7 @@ mod tests {
                     content: Content::text("ok"),
                 },
             ],
+            store: Store::default(),
         }
     }
 

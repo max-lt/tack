@@ -112,6 +112,11 @@ impl Terminals {
         Ok(id)
     }
 
+    /// Hand out ids above `last` from now on.
+    pub fn reserve(&self, last: u32) {
+        self.next_id.fetch_max(last, Ordering::SeqCst);
+    }
+
     pub fn send(&self, id: u32, bytes: &[u8]) -> io::Result<()> {
         let mut open = self.open.lock().unwrap();
         let terminal = open.get_mut(&id).ok_or_else(|| unknown(id))?;

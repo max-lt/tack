@@ -13,6 +13,7 @@ use crate::history::{self, StoredSession};
 use crate::permission::{AllowAll, PermissionHandler, Tool};
 use crate::provider::Provider;
 use crate::sandbox::{FileChange, Sandbox};
+use crate::store::{SharedStore, Store};
 use crate::tools::{self, ToolRegistry};
 
 /// What one [`Session::send_message`] turn consumed.
@@ -39,6 +40,12 @@ pub struct Session<P: PermissionHandler> {
     id: String,
     /// Conversation size after the last completed turn, in tokens.
     context_used: u64,
+    /// Terminals and other things the session set up; saved with it.
+    store: SharedStore,
+    #[cfg(not(target_arch = "wasm32"))]
+    terminals: Arc<crate::terminal::Terminals>,
+    /// What a resume lost, told to the model with the next message.
+    resume_note: Option<String>,
 }
 
 pub struct SessionBuilder {
@@ -185,8 +192,17 @@ impl SessionBuilder {
 
         let bootstrap_len = bootstrap_messages.len();
 
+        let store = SharedStore::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        let terminals = Arc::new(crate::terminal::Terminals::default());
+
         #[allow(unused_mut)]
-        let mut tools = tools::default_registry(&caps);
+        let mut tools = tools::default_registry(
+            &caps,
+            &store,
+            #[cfg(not(target_arch = "wasm32"))]
+            terminals.clone(),
+        );
 
         #[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
         if let Some(client) = self.crosstalk {
@@ -210,6 +226,10 @@ impl SessionBuilder {
             sandbox: caps.sandbox.clone(),
             id: self.id.unwrap_or_else(history::new_id),
             context_used: 0,
+            store,
+            #[cfg(not(target_arch = "wasm32"))]
+            terminals,
+            resume_note: None,
         })
     }
 
@@ -236,6 +256,7 @@ impl<P: PermissionHandler> Session<P> {
         // The old conversation stays on disk and remains resumable.
         self.id = history::new_id();
         self.context_used = 0;
+        self.resume_note = None;
     }
 
     pub fn id(&self) -> &str {
@@ -267,6 +288,26 @@ impl<P: PermissionHandler> Session<P> {
         self.context_used = stored
             .context_used
             .unwrap_or_else(|| self.estimate_context());
+
+        let mut store = stored.store;
+
+        // Ids already in the conversation must not name a new terminal.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.terminals.reserve(store.last_terminal_id());
+
+        self.resume_note = store.take_lost();
+        *self.store.lock().unwrap() = store;
+    }
+
+    /// What the session has set up, as it would be saved.
+    pub fn store(&self) -> Store {
+        self.store.lock().unwrap().clone()
+    }
+
+    /// What the last resume lost, until the next message carries it to the
+    /// model.
+    pub fn resume_note(&self) -> Option<&str> {
+        self.resume_note.as_deref()
     }
 
     /// Snapshot of the conversation for [`history::save`]. `None` while there
@@ -283,6 +324,7 @@ impl<P: PermissionHandler> Session<P> {
             updated_at: history::now_secs(),
             messages: self.messages[self.bootstrap_len..].to_vec(),
             context_used: Some(self.context_used),
+            store: self.store(),
         })
     }
 
@@ -306,6 +348,13 @@ impl<P: PermissionHandler> Session<P> {
         handler: &mut dyn EventHandler,
         cancel: &CancellationToken,
     ) -> Result<TurnSummary> {
+        // Kept until the turn succeeds: a failed turn is rolled back.
+        let note = self.resume_note.take();
+        let input = match &note {
+            Some(note) => format!("[{note}]\n\n{input}"),
+            None => input.to_string(),
+        };
+
         self.messages.push(Message {
             role: "user".to_string(),
             content: Content::text(input),
@@ -345,6 +394,7 @@ impl<P: PermissionHandler> Session<P> {
                 Ok(r) => r,
                 Err(e) => {
                     self.messages.pop(); // rollback
+                    self.resume_note = note;
                     return Err(e);
                 }
             };
@@ -527,6 +577,7 @@ mod tests {
                 content: Content::text("x".repeat(4000)),
             }],
             context_used,
+            store: Store::default(),
         }
     }
 
@@ -544,6 +595,28 @@ mod tests {
         s.restore(stored(None));
         // ~4000 bytes of text at ~4 bytes per token, plus the bootstrap.
         assert!(s.context_used() >= 1000, "got {}", s.context_used());
+    }
+
+    #[test]
+    fn restore_reports_lost_terminals_and_skips_their_ids() {
+        let mut s = session();
+        let mut saved = stored(Some(1));
+        saved.store.add_terminal(crate::store::TerminalEntry {
+            id: 4,
+            command: "psql".to_string(),
+            host: false,
+        });
+
+        s.restore(saved);
+
+        assert!(s.resume_note().unwrap().contains("terminal 4: psql"));
+        assert!(s.store().is_empty());
+        assert!(s.to_stored().unwrap().store.is_empty());
+
+        let plan = crate::sandbox::host_terminal("true");
+        let id = s.terminals.open(plan, Path::new("/"), 10, 40).unwrap();
+        assert_eq!(id, 5);
+        s.terminals.close(id).unwrap();
     }
 
     #[test]
