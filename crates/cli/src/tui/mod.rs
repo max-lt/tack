@@ -31,6 +31,10 @@ use claude_code_core::permission::PermissionHandler;
 
 pub use event::{ChannelEventHandler, SessionCmd, UiEvent};
 
+/// Set while the TUI owns the terminal: raw mode, alternate screen, mouse
+/// capture. Only then must an exit restore the terminal.
+pub static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // ---------------------------------------------------------------------------
 // Display model
 // ---------------------------------------------------------------------------
@@ -1042,6 +1046,7 @@ pub fn run(
 
     // Terminal setup
     crossterm::terminal::enable_raw_mode()?;
+    ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
@@ -1185,6 +1190,7 @@ pub fn run(
     }
 
     // Cleanup
+    ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),

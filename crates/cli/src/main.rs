@@ -134,12 +134,16 @@ async fn main() -> Result<()> {
         };
 
         claude_code_core::monitor::kill_all();
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::DisableMouseCapture,
-            crossterm::terminal::LeaveAlternateScreen,
-        );
+
+        // Without the TUI, stdout can be a pipe: write no escape codes.
+        if tui::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::terminal::LeaveAlternateScreen,
+            );
+        }
         std::process::exit(code);
     });
 
