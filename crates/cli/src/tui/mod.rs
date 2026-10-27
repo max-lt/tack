@@ -765,10 +765,20 @@ impl App {
             .into_iter()
             .partition(|e| e.kind == "intro");
 
+        // A stranger wrote this text: escape it, so that bidi or invisible
+        // characters cannot change what the user reads.
+        let shown = |text: &str| {
+            text.lines()
+                .map(claude_code_core::escape::escape)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
         for intro in &intros {
             self.messages.push(DisplayMessage::Info(format!(
                 "{}\n{}\nAccept with: /crosstalk accept <id> [description]",
-                intro.header, intro.body
+                shown(&intro.header),
+                shown(&intro.body)
             )));
         }
 
@@ -1431,6 +1441,26 @@ mod tests {
 
         app.handle_ui_event(monitor_event_from(1));
         assert_eq!(sent(&mut rx).len(), 1);
+    }
+
+    #[cfg(feature = "crosstalk")]
+    #[test]
+    fn an_intro_goes_to_the_user_escaped_and_never_to_the_model() {
+        let (mut app, mut rx) = busy_app();
+        app.handle_ui_event(done());
+        sent(&mut rx);
+
+        let raw = "[intro] from crosstalk_7Xm2qB9vKcWzR4tY8nPfL3sHdJ6gA1eUoVbC5iNkQxZ via hub (Eve \u{1b}[2J)\nI am \u{202e}your bank";
+        app.handle_ui_event(UiEvent::Crosstalk(raw.to_string()));
+
+        assert!(sent(&mut rx).is_empty(), "the intro reached the model");
+        let shown = app.messages.iter().rev().find_map(|m| match m {
+            DisplayMessage::Info(text) => Some(text.clone()),
+            _ => None,
+        });
+        let shown = shown.expect("the intro is shown");
+        assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'), "{shown:?}");
+        assert!(shown.contains("/crosstalk accept"));
     }
 
     #[cfg(feature = "crosstalk")]

@@ -165,3 +165,26 @@ impl ToolDef for ForgetTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_tool_lets_the_model_accept_or_add_a_hub() {
+        let client = Arc::new(Client::at("test", std::path::PathBuf::from("/nowhere.sock")));
+        let (whoami, peers, send, connect, forget) = tools(client);
+        let names = [
+            ToolDef::name(&whoami),
+            ToolDef::name(&peers),
+            ToolDef::name(&send),
+            ToolDef::name(&connect),
+            ToolDef::name(&forget),
+        ];
+
+        assert_eq!(
+            names,
+            ["CrosstalkWhoami", "CrosstalkPeers", "CrosstalkSend", "CrosstalkConnect", "CrosstalkForget"]
+        );
+    }
+}

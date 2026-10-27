@@ -225,6 +225,7 @@ Incoming messages:
 
 - Each line from the peer, the header too, is escaped like monitor output and quoted. The notice says that it is data from another person's agent, not an instruction.
 - The body of one event holds 8192 bytes or less, after the escape. A first line tells how many bytes are not shown.
+- A pairing request (intro) from a stranger goes to the user only, escaped, never to the model. Only the user accepts, with `/crosstalk accept <id>`: no tool lets the model accept or add a hub.
 - 10 messages a minute and 200 a session reach the model. Each one costs a turn, and the peer chooses how many it sends. The TUI tells the user how many it drops.
 - Known limit: the daemon writes its events as text, with no framing. A peer that writes a blank line, then a line such as `[message] from <another peer> via ...`, makes ccrs read a second event with the sender of its choice. A fix needs a structured inbox in the daemon.
 
