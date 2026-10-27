@@ -2,7 +2,7 @@
 //! prints becomes part of an event; lines that come close together are
 //! batched into one event.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -22,6 +22,9 @@ const BATCH_WINDOW: Duration = Duration::from_millis(300);
 const MAX_BATCH: Duration = Duration::from_secs(2);
 /// Most lines in one event; the rest are counted, not sent.
 const MAX_LINES: usize = 100;
+/// Most events one monitor sends in a minute. Each event wakes the model
+/// and costs tokens; past this, the monitor stops.
+pub const MAX_EVENTS_PER_MINUTE: usize = 10;
 /// Most monitors that run at once in one session.
 pub const MAX_MONITORS: usize = 8;
 /// Longest line kept, in bytes.
@@ -174,6 +177,9 @@ impl Monitors {
                 ended,
             };
 
+            // When the recent events were sent, to cap the wake-ups.
+            let mut recent: VecDeque<tokio::time::Instant> = VecDeque::new();
+
             let ended = 'run: loop {
                 let first = tokio::select! {
                     () = stop.cancelled() => break None,
@@ -214,6 +220,22 @@ impl Monitors {
                 }
 
                 let _ = events.send(batch(collected, dropped, None));
+
+                let now = tokio::time::Instant::now();
+                while recent
+                    .front()
+                    .is_some_and(|&t| now.duration_since(t) >= Duration::from_secs(60))
+                {
+                    recent.pop_front();
+                }
+                recent.push_back(now);
+
+                if recent.len() >= MAX_EVENTS_PER_MINUTE {
+                    break Some(format!(
+                        "it sent {MAX_EVENTS_PER_MINUTE} events in one minute, the limit. \
+                         Start it again with a filter that lets fewer lines through"
+                    ));
+                }
             };
 
             // Stopped on request: the caller already knows, and removed it.
@@ -696,6 +718,23 @@ mod tests {
         monitors.stop(ids[0]);
         start(&monitors, "sleep 30");
         assert_eq!(monitors.list().len(), MAX_MONITORS);
+    }
+
+    #[tokio::test]
+    async fn a_chatty_monitor_stops_at_the_wake_up_limit() {
+        let store = SharedStore::default();
+        let (monitors, mut rx) = Monitors::new(store.clone());
+        // One line every 0.5 s: each line is its own event.
+        let id = start(&monitors, "sleep 300 & while true; do echo tick; sleep 0.5; done");
+
+        let events = until_end(&mut rx).await;
+
+        assert_eq!(events.len(), MAX_EVENTS_PER_MINUTE + 1);
+        let ended = events.last().unwrap().ended.as_deref().unwrap();
+        assert!(ended.contains("the limit"), "{ended}");
+        assert!(monitors.list().is_empty());
+        assert!(store.lock().unwrap().monitors.is_empty());
+        assert!(!monitors.stop(id));
     }
 
     #[test]
