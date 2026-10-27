@@ -678,7 +678,7 @@ impl LineBuffer {
             return (buf.len(), None);
         };
 
-        let line = finish(&self.line, self.clipped);
+        let line = self.finish();
         self.line.clear();
         self.clipped = false;
         (end + 1, Some(line))
@@ -686,42 +686,42 @@ impl LineBuffer {
 
     /// The last line, when the output ends without a newline.
     fn rest(self) -> Option<String> {
-        (!self.line.is_empty() || self.clipped).then(|| finish(&self.line, self.clipped))
-    }
-}
-
-/// The text of one line. A clipped line loses a character cut in two and
-/// ends with an ellipsis.
-fn finish(bytes: &[u8], clipped: bool) -> String {
-    let mut bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
-
-    if clipped
-        && let Err(e) = std::str::from_utf8(bytes)
-        && e.error_len().is_none()
-    {
-        bytes = &bytes[..e.valid_up_to()];
+        (!self.line.is_empty() || self.clipped).then(|| self.finish())
     }
 
-    // Clip after the escape: an escaped character takes up to 9 bytes.
-    let mut text = String::new();
-    let mut clipped = clipped;
+    /// The text of the line. A clipped line loses a character cut in two
+    /// and ends with an ellipsis.
+    fn finish(&self) -> String {
+        let mut bytes = self.line.strip_suffix(b"\r").unwrap_or(&self.line);
+        let mut clipped = self.clipped;
 
-    for c in String::from_utf8_lossy(bytes).chars() {
-        let piece = escape(c.encode_utf8(&mut [0; 4]));
-
-        if text.len() + piece.len() > MAX_LINE {
-            clipped = true;
-            break;
+        if clipped
+            && let Err(e) = std::str::from_utf8(bytes)
+            && e.error_len().is_none()
+        {
+            bytes = &bytes[..e.valid_up_to()];
         }
 
-        text.push_str(&piece);
-    }
+        // Clip after the escape: an escaped character takes up to 9 bytes.
+        let mut text = String::new();
 
-    if clipped {
-        text.push('…');
-    }
+        for c in String::from_utf8_lossy(bytes).chars() {
+            let piece = escape(c.encode_utf8(&mut [0; 4]));
 
-    text
+            if text.len() + piece.len() > MAX_LINE {
+                clipped = true;
+                break;
+            }
+
+            text.push_str(&piece);
+        }
+
+        if clipped {
+            text.push('…');
+        }
+
+        text
+    }
 }
 
 #[cfg(test)]
@@ -887,11 +887,11 @@ mod tests {
     #[test]
     fn clipping_keeps_whole_characters() {
         // 'é' is 2 bytes: after "x", byte 1000 cuts the 500th one in two.
-        let line = format!("x{}", "é".repeat(600));
-        let clipped = finish(&line.as_bytes()[..MAX_LINE], true);
+        let line = format!("x{}\n", "é".repeat(600));
+        let clipped = LineBuffer::default().take(line.as_bytes()).1.unwrap();
 
         assert_eq!(clipped, format!("x{}…", "é".repeat(499)));
-        assert_eq!(finish(b"short\r", false), "short");
+        assert_eq!(LineBuffer::default().take(b"short\r\n").1.unwrap(), "short");
     }
 
     #[tokio::test]
@@ -1544,8 +1544,12 @@ mod tests {
 
     #[test]
     fn a_line_stays_under_the_limit_after_escaping() {
-        let nul = finish(&[0u8; MAX_LINE], false);
-        let bad = finish(&[0xFFu8; MAX_LINE], false);
+        let line = |byte| {
+            let mut bytes = vec![byte; MAX_LINE];
+            bytes.push(b'\n');
+            LineBuffer::default().take(&bytes).1.unwrap()
+        };
+        let (nul, bad) = (line(0u8), line(0xFFu8));
 
         for line in [&nul, &bad] {
             assert!(
