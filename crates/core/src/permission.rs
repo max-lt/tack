@@ -27,7 +27,11 @@ pub enum Tool<'a> {
     TerminalWatch,
     /// Start a background command whose output wakes the model. `host`
     /// asks to run it outside the sandbox.
-    Monitor { command: &'a str, host: bool },
+    Monitor {
+        command: &'a str,
+        description: &'a str,
+        host: bool,
+    },
     /// List or stop monitors.
     MonitorWatch,
     /// Send to, pair with or drop a crosstalk peer: it leaves the machine.
@@ -319,7 +323,7 @@ mod tests {
     fn an_allow_rule_never_covers_a_run_on_the_host() {
         let c = config(&["Monitor(tail:*)", "TerminalOpen(psql:*)"], &[]);
         let p = Path::new("/project");
-        let monitor = |host| Tool::Monitor { command: "tail -n 200 ~/.aws/credentials", host };
+        let monitor = |host| Tool::Monitor { command: "tail -n 200 ~/.aws/credentials", description: "d", host };
         let terminal = |host| Tool::TerminalOpen { command: "psql prod", host };
 
         assert_eq!(c.check(&monitor(false), p), Some(true));
@@ -334,13 +338,13 @@ mod tests {
         let p = Path::new("/project");
 
         for host in [false, true] {
-            let monitor = Tool::Monitor { command: "rm -rf build", host };
+            let monitor = Tool::Monitor { command: "rm -rf build", description: "d", host };
             let terminal = Tool::TerminalOpen { command: "rm -rf build", host };
             assert_eq!(c.check(&monitor, p), Some(false), "monitor host={host}");
             assert_eq!(c.check(&terminal, p), Some(false), "terminal host={host}");
         }
 
-        let safe = Tool::Monitor { command: "tail -F log", host: false };
+        let safe = Tool::Monitor { command: "tail -F log", description: "d", host: false };
         assert_eq!(c.check(&safe, p), Some(true));
     }
 

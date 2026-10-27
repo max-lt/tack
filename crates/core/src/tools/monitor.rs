@@ -70,7 +70,7 @@ impl ToolDef for MonitorTool {
                 "command": { "type": "string", "description": "Command to run with bash -c" },
                 "description": {
                     "type": "string",
-                    "description": "What this watches, shown with every event"
+                    "description": "What this watches, shown with every event. One line, 200 bytes or less."
                 },
                 "host": {
                     "type": "boolean",

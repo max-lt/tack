@@ -4,6 +4,7 @@ use std::sync::mpsc as std_mpsc;
 use tokio::sync::mpsc;
 
 use claude_code_core::permission::{PermissionConfig, PermissionHandler, Tool};
+use claude_code_core::monitor::escape;
 use claude_code_core::sandbox::FileChange;
 
 use crate::tui::UiEvent;
@@ -97,9 +98,17 @@ impl PermissionHandler for ChannelPermissions {
                     false => format!("Open a terminal{place} running: {command}"),
                 }
             }
-            Tool::Monitor { command, host } => {
+            Tool::Monitor {
+                command,
+                description,
+                host,
+            } => {
                 let place = if *host { " ON THIS MACHINE" } else { "" };
-                format!("Monitor{place} the output of: {command}")
+                format!(
+                    "Monitor{place} the output of: {}\n  description: {}",
+                    escape(command),
+                    escape(description)
+                )
             }
             Tool::TerminalSend { input } => format!("Type into a terminal: {input}"),
             Tool::Crosstalk { action, peer, text } => match *action {

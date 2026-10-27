@@ -281,7 +281,15 @@ pub fn to_permission_tool<'a>(
         "Monitor" => {
             let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
             let host = input.get("host").and_then(|h| h.as_bool()).unwrap_or(false);
-            Some(permission::Tool::Monitor { command, host })
+            let description = input
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            Some(permission::Tool::Monitor {
+                command,
+                description,
+                host,
+            })
         }
         "MonitorList" | "MonitorStop" => Some(permission::Tool::MonitorWatch),
         "CrosstalkWhoami" | "CrosstalkPeers" => Some(permission::Tool::CrosstalkWatch),
