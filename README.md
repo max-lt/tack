@@ -180,7 +180,7 @@ Permissions and resume:
 
 - `Monitor` asks for permission, like `Bash`. A rule such as `Monitor(tail:*)` allows it. `MonitorList` and `MonitorStop` do not ask.
 - The session file keeps the monitors. A resumed session asks again before it starts each one, because the file can change between runs.
-- `ccrs -p` does not start the saved monitors.
+- `ccrs -p` does not start the saved monitors. It keeps them in the session file, and the next interactive run asks to start them.
 
 Stop:
 

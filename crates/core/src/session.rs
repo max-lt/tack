@@ -431,6 +431,18 @@ impl<P: PermissionHandler> Session<P> {
         Some(note)
     }
 
+    /// The store with the saved monitors that did not start yet: ccrs -p
+    /// does not start them, and its save must not drop them.
+    fn store_to_save(&self) -> Store {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut store = self.store();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        store.monitors.extend(self.saved_monitors.iter().cloned());
+
+        store
+    }
+
     /// What the session has set up, as it would be saved.
     pub fn store(&self) -> Store {
         self.store.lock().unwrap().clone()
@@ -456,7 +468,7 @@ impl<P: PermissionHandler> Session<P> {
             updated_at: history::now_secs(),
             messages: self.messages[self.bootstrap_len..].to_vec(),
             context_used: Some(self.context_used),
-            store: self.store(),
+            store: self.store_to_save(),
         })
     }
 
@@ -889,6 +901,25 @@ mod tests {
 
         let note = s.resume_note().expect("a note for the model");
         assert!(note.contains("monitor 3 refused"), "{note}");
+    }
+
+    #[test]
+    fn a_save_without_a_restart_keeps_the_saved_monitors() {
+        let mut s = session();
+        let mut saved = stored(Some(1));
+        saved.store.add_monitor(crate::store::MonitorEntry {
+            id: 2,
+            command: "tail -F log".to_string(),
+            description: "log".to_string(),
+            host: false,
+        });
+
+        // What ccrs -p does: restore, one turn, save. No restart.
+        s.restore(saved);
+        let monitors = s.to_stored().unwrap().store.monitors;
+
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].id, 2);
     }
 
     #[tokio::test]
