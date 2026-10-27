@@ -22,6 +22,8 @@ const BATCH_WINDOW: Duration = Duration::from_millis(300);
 const MAX_BATCH: Duration = Duration::from_secs(2);
 /// Most lines in one event; the rest are counted, not sent.
 const MAX_LINES: usize = 100;
+/// Most monitors that run at once in one session.
+pub const MAX_MONITORS: usize = 8;
 /// Longest line kept, in bytes.
 const MAX_LINE: usize = 1000;
 
@@ -104,6 +106,12 @@ impl Monitors {
         host: bool,
         id: Option<u32>,
     ) -> std::io::Result<u32> {
+        if self.running.lock().unwrap().len() >= MAX_MONITORS {
+            return Err(std::io::Error::other(format!(
+                "{MAX_MONITORS} monitors already run; stop one first"
+            )));
+        }
+
         let mut child = tokio::process::Command::new(&plan.program)
             .args(&plan.args)
             .current_dir(cwd)
@@ -671,6 +679,23 @@ mod tests {
 
         monitors.stop(id);
         assert!(gone_soon(&pid).await, "child {pid} still runs");
+    }
+
+    #[tokio::test]
+    async fn the_number_of_monitors_is_capped() {
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        let ids: Vec<u32> = (0..MAX_MONITORS).map(|_| start(&monitors, "sleep 30")).collect();
+
+        let plan = host_terminal("sleep 30");
+        let err = monitors
+            .start(plan, Path::new("/"), "sleep 30", "x", false, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("already run"), "{err}");
+
+        // A stop makes room again.
+        monitors.stop(ids[0]);
+        start(&monitors, "sleep 30");
+        assert_eq!(monitors.list().len(), MAX_MONITORS);
     }
 
     #[test]
