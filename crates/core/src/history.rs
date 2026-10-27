@@ -17,6 +17,10 @@ use crate::store::Store;
 
 const PREVIEW_CHARS: usize = 80;
 
+/// Format of the session files this ccrs writes. A file without a version
+/// is format 1.
+const FORMAT_VERSION: u64 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSession {
     pub id: String,
@@ -160,7 +164,9 @@ fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!("{}.{}.{n}.tmp", session.id, std::process::id()));
-    let contents = serde_json::to_string(session)?;
+    let mut json = serde_json::to_value(session)?;
+    json["version"] = FORMAT_VERSION.into();
+    let contents = json.to_string();
 
     // Write then rename, so a crash mid-write never corrupts a saved session.
     let written = write_private(&tmp, contents.as_bytes())
@@ -203,7 +209,21 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
     }
 
     let contents = fs::read_to_string(&path).context("Failed to read session file")?;
-    serde_json::from_str(&contents).with_context(|| format!("Session {id} is corrupted"))
+    let json: serde_json::Value =
+        serde_json::from_str(&contents).with_context(|| format!("Session {id} is corrupted"))?;
+
+    // A newer format can hold fields this ccrs does not know. A save would
+    // erase them, so the file is not loaded.
+    let version = json.get("version").map_or(Some(1), serde_json::Value::as_u64);
+    match version {
+        Some(v) if v <= FORMAT_VERSION => {}
+        _ => bail!(
+            "Session {id} was saved by a newer ccrs (format {}); this ccrs reads format {FORMAT_VERSION}",
+            json["version"]
+        ),
+    }
+
+    serde_json::from_value(json).with_context(|| format!("Session {id} is corrupted"))
 }
 
 fn list_in(dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
@@ -479,6 +499,32 @@ mod tests {
 
         assert!(lock_in(tmp.path(), "../x").is_err());
         assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_file_from_a_newer_ccrs_is_refused_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut json = json_of(&stored("1", "/p", 10, "hi"));
+        json["version"] = serde_json::json!(FORMAT_VERSION + 1);
+        json["only_newer_ccrs_knows"] = serde_json::json!(true);
+        write_raw(tmp.path(), "1", &json.to_string());
+
+        let err = load_from(tmp.path(), "1").unwrap_err();
+        assert!(err.to_string().contains("newer ccrs"), "{err}");
+    }
+
+    #[test]
+    fn files_say_their_version_and_old_files_still_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_in(tmp.path(), &stored("1", "/p", 10, "hi")).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(tmp.path().join("1.json")).unwrap()).unwrap();
+        assert_eq!(raw["version"], FORMAT_VERSION);
+
+        let mut json = json_of(&stored("2", "/p", 10, "hi"));
+        json.as_object_mut().unwrap().remove("version");
+        write_raw(tmp.path(), "2", &json.to_string());
+        load_from(tmp.path(), "2").unwrap();
     }
 
     #[test]
