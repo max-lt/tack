@@ -36,6 +36,10 @@ pub enum UiEvent {
         description: String,
         respond: std_mpsc::SyncSender<bool>,
     },
+    /// The session handled /clear. Monitor events from ids below
+    /// `first_monitor_id` belong to the old conversation. 0 when the clear
+    /// failed and the old conversation goes on.
+    Cleared { first_monitor_id: u32 },
     /// A note for the user from the session task.
     Info(String),
     /// Output of a monitor, or its end.

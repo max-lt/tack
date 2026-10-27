@@ -181,6 +181,9 @@ pub struct App {
     /// hand them back to the input. They go after the user's queue, once a
     /// turn ends without an error.
     notices: VecDeque<String>,
+    /// Monitor events below this id belong to a cleared conversation.
+    /// `None` between a /clear and the session's answer: all are dropped.
+    first_monitor_id: Option<u32>,
     /// Stop was pressed during the current turn. The queue is then handed
     /// back to the input instead of being sent.
     stopping: bool,
@@ -240,6 +243,7 @@ impl App {
             model_picker: None,
             queue: VecDeque::new(),
             notices: VecDeque::new(),
+            first_monitor_id: Some(0),
             stopping: false,
             quit_requested: false,
             lm_models: Vec::new(),
@@ -517,6 +521,10 @@ impl App {
 
                 CommandResult::Clear => {
                     let _ = self.session_tx.send(SessionCmd::Clear);
+                    // Notices of the old conversation must not reach the
+                    // new one, also those still in the channel.
+                    self.notices.clear();
+                    self.first_monitor_id = None;
                     self.context_used = 0;
                     self.messages.clear();
                     self.messages
@@ -678,7 +686,15 @@ impl App {
 
             UiEvent::Info(note) => self.messages.push(DisplayMessage::Info(note)),
 
-            UiEvent::Monitor(event) => self.deliver_notice(event.notice()),
+            UiEvent::Monitor(event) => {
+                if self.first_monitor_id.is_some_and(|first| event.id >= first) {
+                    self.deliver_notice(event.notice());
+                }
+            }
+
+            UiEvent::Cleared { first_monitor_id } => {
+                self.first_monitor_id = Some(first_monitor_id);
+            }
 
             #[cfg(feature = "crosstalk")]
             UiEvent::Crosstalk(raw) => self.crosstalk_events(raw),
@@ -998,11 +1014,16 @@ async fn session_loop(
             }
 
             SessionCmd::Clear => {
-                if let Err(e) = session.clear() {
-                    let _ = ui_tx.send(UiEvent::Error(format!(
-                        "/clear failed, and the conversation goes on (only the screen was cleared): {e:#}"
-                    )));
-                }
+                let first_monitor_id = match session.clear() {
+                    Ok(()) => session.next_monitor_id(),
+                    Err(e) => {
+                        let _ = ui_tx.send(UiEvent::Error(format!(
+                            "/clear failed, and the conversation goes on (only the screen was cleared): {e:#}"
+                        )));
+                        0
+                    }
+                };
+                let _ = ui_tx.send(UiEvent::Cleared { first_monitor_id });
 
                 // The fresh session has no file yet: nothing to hint at.
                 if let Ok(mut slot) = last_saved.lock() {
@@ -1345,6 +1366,55 @@ mod tests {
             app.handle_ui_event(done());
             assert!(sent(&mut rx).is_empty(), "the notice was sent twice");
         }
+    }
+
+    fn monitor_event_from(id: u32) -> UiEvent {
+        UiEvent::Monitor(claude_code_core::monitor::MonitorEvent {
+            id,
+            description: "log".to_string(),
+            lines: vec![format!("from {id}")],
+            dropped: 0,
+            ended: None,
+        })
+    }
+
+    #[test]
+    fn clear_drops_the_notices_of_the_old_conversation() {
+        let (mut app, mut rx) = busy_app();
+        app.handle_ui_event(monitor_event_from(1));
+        app.handle_ui_event(UiEvent::Failed("overloaded".to_string()));
+        assert_eq!(app.notices.len(), 1);
+
+        app.input = "/clear".to_string();
+        app.submit_input();
+        assert!(app.notices.is_empty());
+        sent(&mut rx);
+
+        // Old events still in the channel, before and after the session
+        // confirms the clear, do not reach the new conversation.
+        app.handle_ui_event(monitor_event_from(1));
+        app.handle_ui_event(UiEvent::Cleared { first_monitor_id: 3 });
+        app.handle_ui_event(monitor_event_from(2));
+        assert!(sent(&mut rx).is_empty());
+
+        // A monitor of the new conversation gets through.
+        app.handle_ui_event(monitor_event_from(3));
+        assert_eq!(sent(&mut rx).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_clear_lets_the_old_monitors_through_again() {
+        let (mut app, mut rx) = busy_app();
+        app.handle_ui_event(done());
+        sent(&mut rx);
+
+        app.input = "/clear".to_string();
+        app.submit_input();
+        sent(&mut rx);
+        app.handle_ui_event(UiEvent::Cleared { first_monitor_id: 0 });
+
+        app.handle_ui_event(monitor_event_from(1));
+        assert_eq!(sent(&mut rx).len(), 1);
     }
 
     #[test]

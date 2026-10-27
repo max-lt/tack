@@ -497,6 +497,15 @@ impl<P: PermissionHandler> Session<P> {
         }
     }
 
+    /// The id that the next monitor gets: above every id used before.
+    pub fn next_monitor_id(&self) -> u32 {
+        self.store
+            .lock()
+            .unwrap()
+            .last_monitor_id()
+            .saturating_add(1)
+    }
+
     /// What the session has set up, as it would be saved.
     pub fn store(&self) -> Store {
         self.store.lock().unwrap().clone()
