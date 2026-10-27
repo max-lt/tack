@@ -87,7 +87,10 @@ pub fn sessions_dir() -> Result<PathBuf> {
     make_private(&dir).context("Failed to create sessions directory")?;
 
     static CLEANED: std::sync::Once = std::sync::Once::new();
-    CLEANED.call_once(|| remove_stale_tmp(&dir));
+    CLEANED.call_once(|| {
+        remove_stale_tmp(&dir);
+        make_files_private(&dir);
+    });
 
     Ok(dir)
 }
@@ -218,6 +221,33 @@ fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
     written?;
 
     Ok(())
+}
+
+/// Give the session files and locks in `dir` to the owner only. Files
+/// saved before ccrs wrote mode 0600 can be readable by all. A symbolic
+/// link is skipped: a chmod would change its target.
+fn make_files_private(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+
+            if meta.is_file() && meta.permissions().mode() & 0o077 != 0 {
+                let _ = fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Remove the temporary files of saves whose process is gone: a process
@@ -913,6 +943,27 @@ pub(crate) mod tests {
         }
 
         assert_eq!(FORMAT_VERSION, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_session_files_become_owner_only_and_links_are_not_touched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("1.json");
+        fs::write(&old, "{}").unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        let target = outside.path().join("mine");
+        fs::write(&target, "x").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("2.json")).unwrap();
+
+        make_files_private(tmp.path());
+
+        assert_eq!(mode(&old), 0o600);
+        assert_eq!(mode(&target), 0o644);
     }
 
     #[test]
