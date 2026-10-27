@@ -113,7 +113,7 @@ pub async fn start(
     let plan = if host {
         host_terminal(command)
     } else {
-        sandbox.terminal(command, cwd, false).await?
+        sandbox.terminal(command, cwd, crate::sandbox::Io::Pipes).await?
     };
 
     monitors.start(plan, cwd, command, description, host, id)

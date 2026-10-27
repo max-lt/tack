@@ -57,7 +57,7 @@ pub trait Sandbox: Send + Sync {
         &'a self,
         command: &'a str,
         _workspace: &'a Path,
-        _tty: bool,
+        _io: Io,
     ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
         Box::pin(std::future::ready(Ok(host_terminal(command))))
     }
@@ -77,6 +77,16 @@ pub trait Sandbox: Send + Sync {
     ) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(std::future::ready(Ok(())))
     }
+}
+
+/// How a long-running program talks to ccrs.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Io {
+    /// A terminal: TerminalOpen.
+    Pty,
+    /// Plain stdout and stderr, read line by line: Monitor.
+    Pipes,
 }
 
 /// A program to start, under a PTY or with pipes.
@@ -352,10 +362,10 @@ mod apple {
                 .map(|vm| vm.name.clone())
         }
 
-        fn exec_args(name: &str, env: &[String], tty: bool) -> Vec<String> {
+        fn exec_args(name: &str, env: &[String], io: Io) -> Vec<String> {
             let mut args = vec!["exec".to_string()];
 
-            if tty {
+            if io == Io::Pty {
                 args.push("-it".to_string());
             }
 
@@ -530,12 +540,12 @@ mod apple {
             &'a self,
             command: &'a str,
             workspace: &'a Path,
-            tty: bool,
+            io: Io,
         ) -> BoxFuture<'a, io::Result<TerminalPlan>> {
             Box::pin(async move {
                 let lease = Lease::new(&self.inner);
                 let (name, env) = self.ready(workspace).await?;
-                let mut args = Self::exec_args(&name, &env, tty);
+                let mut args = Self::exec_args(&name, &env, io);
 
                 if !command.trim().is_empty() {
                     args.extend(["-c".to_string(), command.to_string()]);
@@ -553,7 +563,7 @@ mod apple {
             Box::pin(async move {
                 let lease = Lease::new(&self.inner);
                 let (name, env) = self.ready(request.workspace).await?;
-                let mut args = Self::exec_args(&name, &env, false);
+                let mut args = Self::exec_args(&name, &env, Io::Pipes);
                 args.extend(["-c".to_string(), request.command.to_string()]);
 
                 let run = tokio::process::Command::new("container")
