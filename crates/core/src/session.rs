@@ -1003,7 +1003,7 @@ mod tests {
 
         assert_ne!(s.id(), old);
         assert!(history::lock_in(dir.path(), s.id()).is_err());
-        history::lock_in(dir.path(), &old).unwrap();
+        history::tests::lock_soon(dir.path(), &old);
     }
 
     #[test]

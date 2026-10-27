@@ -429,7 +429,7 @@ fn summarize(stored: &StoredSession) -> SessionSummary {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::api::Content;
 
@@ -642,7 +642,7 @@ mod tests {
         // Another id is free, and the id is free again once released.
         lock_in(tmp.path(), "2").unwrap();
         drop(first);
-        lock_in(tmp.path(), "1").unwrap();
+        lock_soon(tmp.path(), "1");
 
         assert!(lock_in(tmp.path(), "../x").is_err());
         assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
@@ -696,7 +696,21 @@ mod tests {
         lock.relock("new").unwrap();
 
         assert!(lock_in(tmp.path(), "new").is_err());
-        lock_in(tmp.path(), "old").unwrap();
+        lock_soon(tmp.path(), "old");
+    }
+
+    /// Take the lock of `id`, waiting up to 1 s. A child that a parallel
+    /// test forks holds a copy of each open descriptor, and so of a flock,
+    /// until its exec closes it.
+    #[cfg(unix)]
+    pub(crate) fn lock_soon(dir: &Path, id: &str) -> SessionLock {
+        for _ in 0..50 {
+            if let Ok(lock) = lock_in(dir, id) {
+                return lock;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        lock_in(dir, id).unwrap()
     }
 
     #[cfg(unix)]
