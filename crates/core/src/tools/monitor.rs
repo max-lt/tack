@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock};
 
 use super::{ToolDef, ToolOutput};
 use crate::monitor::{
-    MAX_EVENTS_PER_MINUTE, MAX_MONITORS, MAX_SESSION_EVENTS_PER_MINUTE, Monitors,
+    MAX_EVENTS_PER_MINUTE, MAX_MONITORS, MAX_SESSION_EVENTS_PER_MINUTE, Monitors, Place, Spec,
 };
 use crate::sandbox::{Sandbox, host_terminal};
 
@@ -91,7 +91,14 @@ impl ToolDef for MonitorTool {
 
         let host = input.get("host").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        match start(&self.monitors, &*self.sandbox, cwd, command, description, host, None).await {
+        let spec = Spec {
+            command,
+            description,
+            place: if host { Place::Host } else { Place::Sandbox },
+            id: None,
+        };
+
+        match start(&self.monitors, &*self.sandbox, cwd, spec).await {
             Ok(id) => ToolOutput::success(format!(
                 "Monitor {id} started. Its output will reach you as messages."
             )),
@@ -100,23 +107,24 @@ impl ToolDef for MonitorTool {
     }
 }
 
-/// Start a monitor where `host` says: on the user's machine or in the sandbox.
+/// Start a monitor where `spec.place` says: on the user's machine or in the
+/// sandbox.
 pub async fn start(
     monitors: &Monitors,
     sandbox: &dyn Sandbox,
     cwd: &Path,
-    command: &str,
-    description: &str,
-    host: bool,
-    id: Option<u32>,
+    spec: Spec<'_>,
 ) -> std::io::Result<u32> {
-    let plan = if host {
-        host_terminal(command)
-    } else {
-        sandbox.terminal(command, cwd, crate::sandbox::Io::Pipes).await?
+    let plan = match spec.place {
+        Place::Host => host_terminal(spec.command),
+        Place::Sandbox => {
+            sandbox
+                .terminal(spec.command, cwd, crate::sandbox::Io::Pipes)
+                .await?
+        }
     };
 
-    monitors.start(plan, cwd, command, description, host, id)
+    monitors.start(plan, cwd, spec)
 }
 
 impl ToolDef for MonitorListTool {

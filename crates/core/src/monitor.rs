@@ -76,6 +76,25 @@ impl MonitorEvent {
     }
 }
 
+/// A monitor to start.
+pub struct Spec<'a> {
+    pub command: &'a str,
+    /// Shown with every event: one line, `MAX_DESCRIPTION` bytes or less.
+    pub description: &'a str,
+    pub place: Place,
+    /// The id of a restored monitor; `None` takes a new one.
+    pub id: Option<u32>,
+}
+
+/// Where a monitor runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Where Bash runs: the sandbox, when there is one.
+    Sandbox,
+    /// On the user's machine, outside the sandbox.
+    Host,
+}
+
 struct Running {
     entry: MonitorEntry,
     stop: CancellationToken,
@@ -119,17 +138,15 @@ impl Monitors {
         self.next_id.fetch_max(last, Ordering::SeqCst);
     }
 
-    /// Start `plan` and record it in the store. `id` reuses the id of a
-    /// restored monitor; `None` takes a new one.
-    pub fn start(
-        &self,
-        plan: TerminalPlan,
-        cwd: &Path,
-        command: &str,
-        description: &str,
-        host: bool,
-        id: Option<u32>,
-    ) -> std::io::Result<u32> {
+    /// Start `plan` and record it in the store.
+    pub fn start(&self, plan: TerminalPlan, cwd: &Path, spec: Spec<'_>) -> std::io::Result<u32> {
+        let Spec {
+            command,
+            description,
+            place,
+            id,
+        } = spec;
+
         if self.registry.is_closed() {
             return Err(exiting());
         }
@@ -187,7 +204,7 @@ impl Monitors {
             id,
             command: command.to_string(),
             description: description.to_string(),
-            host,
+            host: place == Place::Host,
         };
         let stop = CancellationToken::new();
 
@@ -724,7 +741,7 @@ mod tests {
         let cmd = "echo one; echo two >&2; sleep 1; echo three";
 
         let id = monitors
-            .start(host_terminal(cmd), Path::new("/"), cmd, "test", false, None)
+            .start(host_terminal(cmd), Path::new("/"), Spec { command: cmd, description: "test", place: Place::Sandbox, id: None })
             .unwrap();
         assert_eq!(store.lock().unwrap().monitors.len(), 1);
 
@@ -749,14 +766,7 @@ mod tests {
         let cmd = "echo $$; while true; do echo tick; sleep 0.1; done";
 
         let id = monitors
-            .start(
-                host_terminal(cmd),
-                Path::new("/"),
-                cmd,
-                "ticks",
-                false,
-                None,
-            )
+            .start(host_terminal(cmd), Path::new("/"), Spec { command: cmd, description: "ticks", place: Place::Sandbox, id: None })
             .unwrap();
         let pid = next(&mut rx).await.lines.remove(0);
         assert!(alive(&pid));
@@ -770,7 +780,7 @@ mod tests {
 
     fn start(monitors: &Monitors, cmd: &str) -> u32 {
         monitors
-            .start(host_terminal(cmd), Path::new("/"), cmd, "test", false, None)
+            .start(host_terminal(cmd), Path::new("/"), Spec { command: cmd, description: "test", place: Place::Sandbox, id: None })
             .unwrap()
     }
 
@@ -888,7 +898,7 @@ mod tests {
 
         assert!(
             monitors
-                .start(plan, Path::new("/"), "x", "x", false, None)
+                .start(plan, Path::new("/"), Spec { command: "x", description: "x", place: Place::Sandbox, id: None })
                 .is_err()
         );
         assert!(monitors.list().is_empty());
@@ -924,7 +934,7 @@ mod tests {
         let (monitors, _rx) = Monitors::new(SharedStore::default());
         let (plan, released) = leased("sleep 30");
         let id = monitors
-            .start(plan, Path::new("/"), "sleep 30", "x", false, None)
+            .start(plan, Path::new("/"), Spec { command: "sleep 30", description: "x", place: Place::Sandbox, id: None })
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -940,7 +950,7 @@ mod tests {
         let cmd = "while true; do echo tick; sleep 0.05; done";
         let (plan, released) = leased(cmd);
         let id = monitors
-            .start(plan, Path::new("/"), cmd, "x", false, None)
+            .start(plan, Path::new("/"), Spec { command: cmd, description: "x", place: Place::Sandbox, id: None })
             .unwrap();
 
         // Wait for the first event, then stop while the next batch is open.
@@ -966,7 +976,7 @@ mod tests {
         let (monitors, mut rx) = Monitors::new(SharedStore::default());
         let (plan, released) = leased("true");
         monitors
-            .start(plan, Path::new("/"), "true", "x", false, None)
+            .start(plan, Path::new("/"), Spec { command: "true", description: "x", place: Place::Sandbox, id: None })
             .unwrap();
 
         until_end(&mut rx).await;
@@ -979,10 +989,10 @@ mod tests {
         let (a, released_a) = leased("sleep 30");
         let (b, released_b) = leased("sleep 30");
         monitors
-            .start(a, Path::new("/"), "a", "a", false, None)
+            .start(a, Path::new("/"), Spec { command: "a", description: "a", place: Place::Sandbox, id: None })
             .unwrap();
         monitors
-            .start(b, Path::new("/"), "b", "b", false, None)
+            .start(b, Path::new("/"), Spec { command: "b", description: "b", place: Place::Sandbox, id: None })
             .unwrap();
 
         drop(monitors);
@@ -1141,7 +1151,7 @@ mod tests {
 
         let plan = host_terminal("sleep 30");
         let err = monitors
-            .start(plan, Path::new("/"), "sleep 30", "x", false, None)
+            .start(plan, Path::new("/"), Spec { command: "sleep 30", description: "x", place: Place::Sandbox, id: None })
             .unwrap_err();
         assert!(err.to_string().contains("already run"), "{err}");
 
@@ -1230,7 +1240,7 @@ mod tests {
 
         registry.kill_all();
 
-        let result = monitors.start(host_terminal(&cmd), Path::new("/"), &cmd, "x", false, None);
+        let result = monitors.start(host_terminal(&cmd), Path::new("/"), Spec { command: &cmd, description: "x", place: Place::Sandbox, id: None });
         assert!(result.is_err());
         assert!(monitors.list().is_empty());
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1246,7 +1256,7 @@ mod tests {
         let cmd = format!("sleep 0.3; touch {}", marker.display());
 
         let err = monitors
-            .start(host_terminal(&cmd), Path::new("/"), &cmd, "x", false, None)
+            .start(host_terminal(&cmd), Path::new("/"), Spec { command: &cmd, description: "x", place: Place::Sandbox, id: None })
             .unwrap_err();
 
         assert!(err.to_string().contains("exiting"), "{err}");
@@ -1293,7 +1303,7 @@ mod tests {
         let (monitors, _rx) = Monitors::new(SharedStore::default());
         let (plan, released) = leased("exec >&- 2>&-; sleep 300");
         let id = monitors
-            .start(plan, Path::new("/"), "x", "x", false, None)
+            .start(plan, Path::new("/"), Spec { command: "x", description: "x", place: Place::Sandbox, id: None })
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1362,7 +1372,7 @@ mod tests {
     async fn a_description_must_be_one_short_line() {
         let (monitors, _rx) = Monitors::new(SharedStore::default());
         let try_start = |description: &str| {
-            monitors.start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", description, false, None)
+            monitors.start(host_terminal("sleep 30"), Path::new("/"), Spec { command: "sleep 30", description: description, place: Place::Sandbox, id: None })
         };
 
         for bad in [
@@ -1419,7 +1429,7 @@ mod tests {
     #[tokio::test]
     async fn an_id_that_runs_cannot_start_twice() {
         let (monitors, _rx) = Monitors::new(SharedStore::default());
-        let start_as = |id| monitors.start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", "x", false, Some(id));
+        let start_as = |id| monitors.start(host_terminal("sleep 30"), Path::new("/"), Spec { command: "sleep 30", description: "x", place: Place::Sandbox, id: Some(id) });
 
         start_as(1).unwrap();
         let err = start_as(1).unwrap_err();
@@ -1434,7 +1444,7 @@ mod tests {
         monitors.reserve(u32::MAX);
 
         let err = monitors
-            .start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", "x", false, None)
+            .start(host_terminal("sleep 30"), Path::new("/"), Spec { command: "sleep 30", description: "x", place: Place::Sandbox, id: None })
             .unwrap_err();
         assert!(err.to_string().contains("no monitor id left"), "{err}");
     }

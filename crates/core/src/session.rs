@@ -404,15 +404,7 @@ impl<P: PermissionHandler> Session<P> {
                 continue;
             }
 
-            let result = tools::monitor::start(
-                &self.monitors,
-                &*self.sandbox,
-                &self.cwd,
-                &m.command,
-                &m.description,
-                m.host,
-                Some(m.id),
-            )
+            let result = tools::monitor::start(&self.monitors, &*self.sandbox, &self.cwd, crate::monitor::Spec { command: &m.command, description: &m.description, place: if m.host { crate::monitor::Place::Host } else { crate::monitor::Place::Sandbox }, id: Some(m.id) })
             .await;
 
             match result {
@@ -863,7 +855,7 @@ mod tests {
         let mut s = session_in(dir.path(), AllowAll);
         let mut events = s.take_monitor_events().unwrap();
         s.monitors
-            .start(crate::sandbox::host_terminal("true"), dir.path(), "true", "x", true, Some(3))
+            .start(crate::sandbox::host_terminal("true"), dir.path(), crate::monitor::Spec { command: "true", description: "x", place: crate::monitor::Place::Host, id: Some(3) })
             .unwrap();
         // Output event or end event: wait for the end.
         while events.recv().await.unwrap().ended.is_none() {}
@@ -879,7 +871,7 @@ mod tests {
 
         let id = resumed
             .monitors
-            .start(crate::sandbox::host_terminal("sleep 30"), dir.path(), "sleep 30", "x", true, None)
+            .start(crate::sandbox::host_terminal("sleep 30"), dir.path(), crate::monitor::Spec { command: "sleep 30", description: "x", place: crate::monitor::Place::Host, id: None })
             .unwrap();
         assert_eq!(id, 4);
     }
@@ -950,7 +942,7 @@ mod tests {
         let cmd = "sleep 300 & echo $!; wait";
 
         s.monitors
-            .start(crate::sandbox::host_terminal(cmd), dir.path(), cmd, "x", true, None)
+            .start(crate::sandbox::host_terminal(cmd), dir.path(), crate::monitor::Spec { command: cmd, description: "x", place: crate::monitor::Place::Host, id: None })
             .unwrap();
         let pid = events.recv().await.unwrap().lines.remove(0);
 
