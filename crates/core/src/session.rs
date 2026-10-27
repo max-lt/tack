@@ -421,6 +421,13 @@ impl<P: PermissionHandler> Session<P> {
             }
         }
 
+        // The history says the monitors started: tell the model what the
+        // resume did, with its next message, as for lost terminals.
+        self.resume_note = Some(match self.resume_note.take() {
+            Some(lost) => format!("{lost}\n\n{note}"),
+            None => note.clone(),
+        });
+
         Some(note)
     }
 
@@ -863,6 +870,25 @@ mod tests {
             .start(crate::sandbox::host_terminal("sleep 30"), dir.path(), "sleep 30", "x", true, None)
             .unwrap();
         assert_eq!(id, 4);
+    }
+
+    #[tokio::test]
+    async fn the_model_learns_which_monitors_a_resume_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), crate::permission::DenyAll);
+        let mut saved = stored(Some(1));
+        saved.store.add_monitor(crate::store::MonitorEntry {
+            id: 3,
+            command: "tail -F log".to_string(),
+            description: "log".to_string(),
+            host: false,
+        });
+
+        s.restore(saved);
+        s.restart_monitors().await.unwrap();
+
+        let note = s.resume_note().expect("a note for the model");
+        assert!(note.contains("monitor 3 refused"), "{note}");
     }
 
     #[tokio::test]
