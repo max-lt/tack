@@ -116,6 +116,33 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // SIGTERM and SIGHUP end the process without unwinding. Monitors run in
+    // their own process groups, so they would not get the signal.
+    tokio::spawn(async {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let (Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) else {
+            return;
+        };
+
+        let code = tokio::select! {
+            _ = term.recv() => 143,
+            _ = hup.recv() => 129,
+        };
+
+        claude_code_core::monitor::kill_all();
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::terminal::LeaveAlternateScreen,
+        );
+        std::process::exit(code);
+    });
+
     let quiet = cli.print.is_some();
 
     if !quiet {

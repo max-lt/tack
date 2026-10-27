@@ -125,7 +125,7 @@ impl Monitors {
             // Its own group, so a stop reaches the processes it starts.
             .process_group(0)
             .spawn()?;
-        let group = child.id().map(Group);
+        let group = child.id().map(Group::new);
 
         let id = id.unwrap_or_else(|| self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
         let entry = MonitorEntry {
@@ -282,18 +282,51 @@ impl Drop for Monitors {
     }
 }
 
+/// Process groups of the monitors that run in this process, for
+/// [`kill_all`].
+static GROUPS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
 /// The process group of a monitor's command. Dropping it kills every
 /// process in the group.
 struct Group(u32);
 
+impl Group {
+    fn new(pgid: u32) -> Self {
+        GROUPS.lock().unwrap().push(pgid);
+        Self(pgid)
+    }
+}
+
 impl Drop for Group {
     fn drop(&mut self) {
-        if let Ok(pgid) = libc::pid_t::try_from(self.0) {
-            // SAFETY: killpg takes plain integers. The group is ours: the
-            // command was started as its leader.
-            unsafe { libc::killpg(pgid, libc::SIGKILL) };
-        }
+        GROUPS.lock().unwrap().retain(|&g| g != self.0);
+        killpg(self.0);
     }
+}
+
+fn killpg(pgid: u32) {
+    if let Ok(pgid) = libc::pid_t::try_from(pgid) {
+        // SAFETY: killpg takes plain integers. The group is ours: the
+        // command was started as its leader.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    }
+}
+
+/// Kill the commands of every monitor in this process. For a process that
+/// exits without unwinding, such as on SIGTERM: the monitors run in their
+/// own process groups, so a signal to this process does not reach them.
+pub fn kill_all() {
+    kill_where(|_| true);
+}
+
+fn kill_where(pick: impl Fn(u32) -> bool) {
+    GROUPS.lock().unwrap().retain(|&pgid| {
+        if pick(pgid) {
+            killpg(pgid);
+            return false;
+        }
+        true
+    });
 }
 
 /// Send each line of `stream`, as text. A line keeps at most `MAX_LINE`
@@ -735,6 +768,23 @@ mod tests {
         assert!(monitors.list().is_empty());
         assert!(store.lock().unwrap().monitors.is_empty());
         assert!(!monitors.stop(id));
+    }
+
+    #[tokio::test]
+    async fn kill_where_reaches_a_live_monitor() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        start(&monitors, "sleep 300 & echo $!; wait");
+        let pid = next(&mut rx).await.lines.remove(0);
+
+        // Tests share the process: kill only this test's group, the way
+        // kill_all kills every group.
+        // SAFETY: getpgid takes a plain integer.
+        let pgid = unsafe { libc::getpgid(pid.parse().unwrap()) };
+        kill_where(|g| i64::from(g) == i64::from(pgid));
+
+        assert!(gone_soon(&pid).await, "child {pid} still runs");
+        // Still alive: kill_all does not need a drop.
+        drop(monitors);
     }
 
     #[test]

@@ -715,6 +715,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_the_session_kills_its_monitors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut events = s.take_monitor_events().unwrap();
+        let cmd = "sleep 300 & echo $!; wait";
+
+        s.monitors
+            .start(crate::sandbox::host_terminal(cmd), dir.path(), cmd, "x", true, None)
+            .unwrap();
+        let pid = events.recv().await.unwrap().lines.remove(0);
+
+        drop(s);
+
+        let mut gone = false;
+        for _ in 0..50 {
+            let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap();
+            if !alive.success() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "child {pid} outlived its session");
+    }
+
+    #[tokio::test]
     async fn resume_asks_again_before_starting_a_saved_monitor() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("ran");
