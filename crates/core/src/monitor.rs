@@ -77,17 +77,26 @@ pub struct Monitors {
     next_id: AtomicU32,
     events: mpsc::UnboundedSender<MonitorEvent>,
     store: SharedStore,
+    registry: &'static Registry,
 }
 
 impl Monitors {
     /// The monitors of one session, and the receiving end of their events.
     pub fn new(store: SharedStore) -> (Arc<Self>, mpsc::UnboundedReceiver<MonitorEvent>) {
+        Self::with_registry(store, &REGISTRY)
+    }
+
+    fn with_registry(
+        store: SharedStore,
+        registry: &'static Registry,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<MonitorEvent>) {
         let (events, rx) = mpsc::unbounded_channel();
         let monitors = Self {
             running: Arc::default(),
             next_id: AtomicU32::new(0),
             events,
             store,
+            registry,
         };
 
         (Arc::new(monitors), rx)
@@ -109,6 +118,10 @@ impl Monitors {
         host: bool,
         id: Option<u32>,
     ) -> std::io::Result<u32> {
+        if self.registry.is_closed() {
+            return Err(exiting());
+        }
+
         if self.running.lock().unwrap().len() >= MAX_MONITORS {
             return Err(std::io::Error::other(format!(
                 "{MAX_MONITORS} monitors already run; stop one first"
@@ -125,7 +138,16 @@ impl Monitors {
             // Its own group, so a stop reaches the processes it starts.
             .process_group(0)
             .spawn()?;
-        let group = child.id().map(Group::new);
+        // A kill_all that ran during the spawn closed the registry: the
+        // command is killed and the start fails.
+        let pgid = child.id().ok_or_else(exiting)?;
+        if !self.registry.add(pgid) {
+            return Err(exiting());
+        }
+        let group = Group {
+            pgid,
+            registry: self.registry,
+        };
 
         let id = id.unwrap_or_else(|| self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
         let entry = MonitorEntry {
@@ -282,25 +304,84 @@ impl Drop for Monitors {
     }
 }
 
-/// Process groups of the monitors that run in this process, for
-/// [`kill_all`].
-static GROUPS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// The process groups of every monitor in this process.
+static REGISTRY: Registry = Registry::new();
+
+/// Kill the commands of every monitor in this process, and refuse new
+/// monitors from now on. For a process that exits without unwinding, such
+/// as on SIGTERM: the monitors run in their own process groups, so a signal
+/// to this process does not reach them.
+pub fn kill_all() {
+    REGISTRY.kill_all();
+}
+
+fn exiting() -> std::io::Error {
+    std::io::Error::other("ccrs is exiting; no monitor can start")
+}
+
+struct Registry {
+    state: Mutex<RegistryState>,
+}
+
+struct RegistryState {
+    groups: Vec<u32>,
+    /// Set by `kill_all`; no group is added after it.
+    closed: bool,
+}
+
+impl Registry {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(RegistryState {
+                groups: Vec::new(),
+                closed: false,
+            }),
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.lock().unwrap().closed
+    }
+
+    /// Record a live group. After `kill_all`, kill it instead and return
+    /// `false`.
+    fn add(&self, pgid: u32) -> bool {
+        let mut state = self.state.lock().unwrap();
+
+        if state.closed {
+            killpg(pgid);
+            return false;
+        }
+
+        state.groups.push(pgid);
+        true
+    }
+
+    fn remove(&self, pgid: u32) {
+        self.state.lock().unwrap().groups.retain(|&g| g != pgid);
+    }
+
+    fn kill_all(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+
+        for pgid in state.groups.drain(..) {
+            killpg(pgid);
+        }
+    }
+}
 
 /// The process group of a monitor's command. Dropping it kills every
 /// process in the group.
-struct Group(u32);
-
-impl Group {
-    fn new(pgid: u32) -> Self {
-        GROUPS.lock().unwrap().push(pgid);
-        Self(pgid)
-    }
+struct Group {
+    pgid: u32,
+    registry: &'static Registry,
 }
 
 impl Drop for Group {
     fn drop(&mut self) {
-        GROUPS.lock().unwrap().retain(|&g| g != self.0);
-        killpg(self.0);
+        self.registry.remove(self.pgid);
+        killpg(self.pgid);
     }
 }
 
@@ -310,23 +391,6 @@ fn killpg(pgid: u32) {
         // command was started as its leader.
         unsafe { libc::killpg(pgid, libc::SIGKILL) };
     }
-}
-
-/// Kill the commands of every monitor in this process. For a process that
-/// exits without unwinding, such as on SIGTERM: the monitors run in their
-/// own process groups, so a signal to this process does not reach them.
-pub fn kill_all() {
-    kill_where(|_| true);
-}
-
-fn kill_where(pick: impl Fn(u32) -> bool) {
-    GROUPS.lock().unwrap().retain(|&pgid| {
-        if pick(pgid) {
-            killpg(pgid);
-            return false;
-        }
-        true
-    });
 }
 
 /// Send each line of `stream`, as text. A line keeps at most `MAX_LINE`
@@ -789,21 +853,60 @@ mod tests {
         assert!(survived, "setsid child {pid} was killed: update the known limit");
     }
 
+    /// A registry of its own, so the test does not kill the monitors of
+    /// tests that run at the same time.
+    fn private() -> (Arc<Monitors>, mpsc::UnboundedReceiver<MonitorEvent>, &'static Registry) {
+        let registry: &'static Registry = Box::leak(Box::new(Registry::new()));
+        let (monitors, rx) = Monitors::with_registry(SharedStore::default(), registry);
+        (monitors, rx, registry)
+    }
+
     #[tokio::test]
-    async fn kill_where_reaches_a_live_monitor() {
-        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+    async fn kill_all_reaches_a_live_monitor() {
+        let (monitors, mut rx, registry) = private();
         start(&monitors, "sleep 300 & echo $!; wait");
         let pid = next(&mut rx).await.lines.remove(0);
 
-        // Tests share the process: kill only this test's group, the way
-        // kill_all kills every group.
-        // SAFETY: getpgid takes a plain integer.
-        let pgid = unsafe { libc::getpgid(pid.parse().unwrap()) };
-        kill_where(|g| i64::from(g) == i64::from(pgid));
+        registry.kill_all();
 
         assert!(gone_soon(&pid).await, "child {pid} still runs");
         // Still alive: kill_all does not need a drop.
         drop(monitors);
+    }
+
+    #[tokio::test]
+    async fn no_monitor_starts_after_kill_all() {
+        let (monitors, _rx, registry) = private();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let cmd = format!("touch {}", marker.display());
+
+        registry.kill_all();
+
+        let result = monitors.start(host_terminal(&cmd), Path::new("/"), &cmd, "x", false, None);
+        assert!(result.is_err());
+        assert!(monitors.list().is_empty());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn a_group_that_registers_during_kill_all_is_killed() {
+        use std::os::unix::process::CommandExt;
+
+        let registry = Registry::new();
+        let mut child = std::process::Command::new("sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+
+        registry.kill_all();
+
+        // The spawn passed the first check before kill_all closed the list.
+        assert!(!registry.add(child.id()));
+        let status = child.wait().unwrap();
+        assert!(!status.success());
     }
 
     #[test]
