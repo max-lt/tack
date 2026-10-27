@@ -576,6 +576,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "webbrowser",
