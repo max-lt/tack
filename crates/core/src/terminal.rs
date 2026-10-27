@@ -25,6 +25,13 @@ const POLL: Duration = Duration::from_millis(50);
 /// a PTY, a reader thread and the sandbox lease.
 pub const MAX_TERMINALS: usize = 8;
 
+/// Largest screen. vt100 keeps one cell per character of the screen.
+pub const MAX_ROWS: u16 = 200;
+pub const MAX_COLS: u16 = 500;
+
+/// Most bytes of screen text in one read, after the escape.
+pub const MAX_SCREEN_BYTES: usize = 32 * 1024;
+
 #[derive(Default)]
 pub struct Terminals {
     open: Mutex<HashMap<u32, Terminal>>,
@@ -63,6 +70,13 @@ impl Terminals {
                 "rows and cols must be positive",
             ));
         };
+
+        if rows > MAX_ROWS || cols > MAX_COLS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the screen can have {MAX_ROWS} rows and {MAX_COLS} cols or fewer"),
+            ));
+        }
 
         if self.open.lock().unwrap().len() >= MAX_TERMINALS {
             return Err(io::Error::other(format!(
@@ -224,7 +238,7 @@ impl Terminals {
         let screen = output.parser.lock().unwrap().screen().contents();
 
         Ok(Snapshot {
-            screen: screen.trim_end().to_string(),
+            screen: for_the_model(screen.trim_end()),
             exit_code,
         })
     }
@@ -236,6 +250,33 @@ impl Drop for Terminals {
             let _ = terminal.child.kill();
         }
     }
+}
+
+/// The screen as text for the model. Any program can print a format
+/// character that the user cannot see, so each line is escaped like monitor
+/// output. Over `MAX_SCREEN_BYTES`, the top lines go: the newest output is
+/// at the bottom.
+fn for_the_model(screen: &str) -> String {
+    let lines: Vec<String> = screen.lines().map(crate::monitor::escape).collect();
+
+    let mut size = 0;
+    let kept = lines
+        .iter()
+        .rev()
+        .take_while(|line| {
+            size += line.len() + 1;
+            size <= MAX_SCREEN_BYTES
+        })
+        .count();
+
+    let dropped = lines.len() - kept;
+    let mut text = lines[dropped..].join("\n");
+
+    if dropped > 0 {
+        text.insert_str(0, &format!("({dropped} lines above not shown)\n"));
+    }
+
+    text
 }
 
 fn unknown(id: u32) -> io::Error {
@@ -313,6 +354,76 @@ mod tests {
 
         terminals.close(ids[0]).unwrap();
         open().unwrap();
+    }
+
+    #[test]
+    fn a_screen_larger_than_the_limit_is_refused() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        for (rows, cols) in [(u16::MAX, 80), (24, u16::MAX), (MAX_ROWS + 1, 80), (24, MAX_COLS + 1)] {
+            let err = terminals
+                .open(host_terminal("true"), dir.path(), rows, cols)
+                .unwrap_err();
+            assert!(err.to_string().contains("rows"), "{rows}x{cols}: {err}");
+        }
+
+        terminals
+            .open(host_terminal("true"), dir.path(), MAX_ROWS, MAX_COLS)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn hidden_characters_on_the_screen_reach_the_model_escaped() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        // A bidi override and a tag-encoded "hi" around visible text.
+        let id = terminals
+            .open(
+                host_terminal("printf 'a\\342\\200\\256b\\363\\240\\201\\250c\\n'; sleep 5"),
+                dir.path(),
+                24,
+                80,
+            )
+            .unwrap();
+
+        let screen = terminals.read_first(id, Duration::from_secs(5)).await.unwrap().screen;
+
+        assert!(!screen.contains('\u{202e}') && !screen.contains('\u{e0068}'), "{screen:?}");
+        assert!(screen.contains("\\u{202e}"), "{screen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_full_screen_stays_under_the_byte_limit() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        // Each cell holds a character that escapes to 8 bytes.
+        let id = terminals
+            .open(
+                host_terminal("while true; do printf '\\342\\200\\256%.0s' $(seq 1 400); done"),
+                dir.path(),
+                MAX_ROWS,
+                MAX_COLS,
+            )
+            .unwrap();
+
+        let screen = terminals.read(id, None, Duration::from_secs(2)).await.unwrap().screen;
+        terminals.close(id).unwrap();
+
+        assert!(screen.len() <= MAX_SCREEN_BYTES + 100, "{} bytes", screen.len());
+    }
+
+    #[test]
+    fn a_long_screen_keeps_its_last_lines_under_the_limit() {
+        // 200 lines of 500 hidden characters: about 800 KB once escaped.
+        let line = "\u{202e}".repeat(500);
+        let screen: Vec<String> = (0..200).map(|i| format!("{i:03}{line}")).collect();
+
+        let text = for_the_model(&screen.join("\n"));
+
+        assert!(text.len() <= MAX_SCREEN_BYTES + 40, "{} bytes", text.len());
+        assert!(text.starts_with('(') && text.contains("lines above not shown"));
+        assert!(text.lines().last().unwrap().starts_with("199"));
     }
 
     #[test]

@@ -164,6 +164,10 @@ Three layers, merged in order:
 | Limit | Value | When the limit is reached |
 |-------|-------|---------------------------|
 | Terminals open at one time, per session | 8 | `TerminalOpen` returns an error. |
+| Screen size | 200 rows, 500 columns | `TerminalOpen` returns an error. |
+| Bytes of screen text in one read, after the escape | 32768 | The top lines are not sent. A first line tells how many. |
+
+The model gets the screen with control and invisible characters as `\xNN` and `\u{N}` text, as for monitor output.
 
 ### Monitors
 

@@ -132,8 +132,8 @@ impl ToolDef for TerminalOpenTool {
                     "type": "boolean",
                     "description": "Run on the user's machine, outside the sandbox (default false)"
                 },
-                "rows": { "type": "integer", "description": "Screen height (default 30)" },
-                "cols": { "type": "integer", "description": "Screen width (default 120)" }
+                "rows": { "type": "integer", "description": "Screen height (default 30, max 200)" },
+                "cols": { "type": "integer", "description": "Screen width (default 120, max 500)" }
             }
         })
     }
