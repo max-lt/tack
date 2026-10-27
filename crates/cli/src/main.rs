@@ -15,7 +15,7 @@ use claude_code_core::capabilities::Capabilities;
 #[cfg(target_os = "macos")]
 use claude_code_core::egress::Allowlist;
 use claude_code_core::config::{Credentials, TokenType};
-use claude_code_core::history::{self, StoredSession};
+use claude_code_core::history;
 #[cfg(target_os = "macos")]
 use claude_code_core::sandbox::AppleContainer;
 use claude_code_core::session::SessionBuilder;
@@ -219,15 +219,22 @@ async fn main() -> Result<()> {
         None => None,
     };
 
-    let stored = select_session(&cli, &cwd)?;
-    let id = match (&stored, &cli.session) {
-        (Some(stored), _) => stored.id.clone(),
-        (None, Some(id)) => id.clone(),
-        (None, None) => history::new_id(),
+    // Pick the id, lock it, and only then read the file: a file read
+    // before the lock can be stale once the lock is won.
+    let pick = select_session(&cli, &cwd)?;
+    let id = match &pick {
+        Pick::Resume(id) | Pick::Named(id) => id.clone(),
+        Pick::New => history::new_id(),
     };
 
     // A second ccrs on this id would erase our turns.
     let lock = history::lock(&id)?;
+
+    let stored = match pick {
+        Pick::Resume(id) => Some(history::load(&id)?),
+        Pick::Named(id) => history::find(&id)?,
+        Pick::New => None,
+    };
 
     let mut builder = SessionBuilder::new(access_token, is_oauth).id(id.clone());
 
@@ -328,24 +335,33 @@ fn load_dotenv() {
 }
 
 /// Resolve `--resume [ID]` / `--continue` to a saved session, if requested.
-fn select_session(cli: &Cli, cwd: &std::path::Path) -> Result<Option<StoredSession>> {
+/// The session that the flags ask for.
+enum Pick {
+    New,
+    /// A saved session that must exist.
+    Resume(String),
+    /// --session: resumed when it exists, else started with this id.
+    Named(String),
+}
+
+fn select_session(cli: &Cli, cwd: &std::path::Path) -> Result<Pick> {
     if let Some(id) = &cli.session {
-        return history::find(id);
+        return Ok(Pick::Named(id.clone()));
     }
 
     if let Some(id) = cli.resume.as_deref().filter(|id| !id.is_empty()) {
-        return history::load(id).map(Some);
+        return Ok(Pick::Resume(id.to_string()));
     }
 
     if !cli.continue_last && cli.resume.is_none() {
-        return Ok(None);
+        return Ok(Pick::New);
     }
 
     let saved = history::list(cwd)?;
 
     if saved.is_empty() {
         eprintln!("No saved conversations in this directory. Starting a new one.\n");
-        return Ok(None);
+        return Ok(Pick::New);
     }
 
     let id = if cli.continue_last {
@@ -353,9 +369,9 @@ fn select_session(cli: &Cli, cwd: &std::path::Path) -> Result<Option<StoredSessi
     } else {
         match ui::prompt_resume(&saved)? {
             Some(i) => saved[i].id.clone(),
-            None => return Ok(None),
+            None => return Ok(Pick::New),
         }
     };
 
-    history::load(&id).map(Some)
+    Ok(Pick::Resume(id))
 }

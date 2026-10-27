@@ -384,7 +384,16 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
         ),
     }
 
-    serde_json::from_value(json).with_context(|| format!("Session {id} is corrupted"))
+    let stored: StoredSession =
+        serde_json::from_value(json).with_context(|| format!("Session {id} is corrupted"))?;
+
+    // The lock and the saves use the name of the file. A copy under
+    // another name would save into the session of its content.
+    if stored.id != id {
+        bail!("Session file {id}.json holds session {}; ccrs does not load it", stored.id);
+    }
+
+    Ok(stored)
 }
 
 fn list_in(dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
@@ -420,6 +429,11 @@ fn list_in(dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
         let Ok(stored) = serde_json::from_str::<StoredSession>(&contents) else {
             continue;
         };
+
+        // A file whose content is another session cannot be resumed.
+        if path.file_stem().and_then(|stem| stem.to_str()) != Some(stored.id.as_str()) {
+            continue;
+        }
 
         if stored.cwd != cwd {
             continue;
@@ -964,6 +978,16 @@ pub(crate) mod tests {
 
         assert_eq!(mode(&old), 0o600);
         assert_eq!(mode(&target), 0o644);
+    }
+
+    #[test]
+    fn a_file_whose_id_is_not_its_name_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_raw(tmp.path(), "copy", &json_of(&stored("100", "/p", 1, "hi")).to_string());
+
+        let err = load_from(tmp.path(), "copy").unwrap_err();
+        assert!(err.to_string().contains("holds session 100"), "{err}");
+        assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
     }
 
     #[test]
