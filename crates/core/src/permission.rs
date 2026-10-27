@@ -248,28 +248,61 @@ const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '(', ')', '<', 
 /// quotes: it finds more parts than bash, never fewer, which suits deny
 /// rules.
 fn commands_in(line: &str) -> Vec<&str> {
-    line.split([';', '&', '|', '\n', '\r', '`', '(', ')'])
-        .map(|part| {
-            let mut rest = part.trim_start();
-
-            while let Some((word, after)) = rest.split_once(char::is_whitespace)
-                && is_assignment(word)
-            {
-                rest = after.trim_start();
-            }
-
-            rest.trim_end()
-        })
+    line.split([';', '&', '|', '\n', '\r', '`', '(', ')', '{', '}'])
+        .map(command_word)
         .filter(|part| !part.is_empty())
         .collect()
 }
 
-/// `NAME=value`, a variable assignment before a command.
-fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(name, _)| {
-        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+/// Words in front of a command that run it: reserved words of bash, and
+/// builtins that run the command that follows.
+const RUNS_NEXT: &[&str] = &[
+    "if", "then", "else", "elif", "do", "while", "until", "!", "time", "command", "builtin",
+    "exec",
+];
+
+/// `part` from its command word on: reserved words, wrappers such as
+/// `time`, and variable assignments in front are removed, and a backslash
+/// in front of the command word (`\rm`), which only skips an alias.
+fn command_word(part: &str) -> &str {
+    let mut rest = part.trim_start();
+
+    loop {
+        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let word = &rest[..word_end];
+
+        if RUNS_NEXT.contains(&word) {
+            rest = rest[word_end..].trim_start();
+        } else if let Some(after) = skip_assignment(rest) {
+            rest = after.trim_start();
+        } else {
+            break;
+        }
+    }
+
+    rest.strip_prefix('\\').unwrap_or(rest).trim_end()
+}
+
+/// The text after a `NAME=value` at the start of `text`, with a quoted
+/// value that can hold spaces. `None` when `text` does not start with an
+/// assignment.
+fn skip_assignment(text: &str) -> Option<&str> {
+    let (name, value) = text.split_once('=')?;
+
+    let valid = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return None;
+    }
+
+    let end = match value.chars().next() {
+        Some(quote @ ('"' | '\'')) => value[1..].find(quote).map_or(value.len(), |i| i + 2),
+        _ => value.find(char::is_whitespace).unwrap_or(value.len()),
+    };
+
+    // A lone assignment is not a command in front of another one.
+    let after = &value[end..];
+    after.starts_with(char::is_whitespace).then_some(after)
 }
 
 /// `tool` with `command` in the place of its own command.
@@ -739,6 +772,34 @@ mod tests {
         for input in ["ls x<C-a>rm -rf ~ #<Enter>", "ls<Left><BS><Enter>", "ls<Esc><Enter>"] {
             assert_eq!(send(input), None, "{input:?} was allowed");
         }
+    }
+
+    #[test]
+    fn a_deny_rule_sees_through_reserved_words_and_wrappers() {
+        let c = config(&["Bash(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+
+        for command in [
+            "if true; then rm -rf ~; fi",
+            "if rm x; then :; fi",
+            "{ rm -rf ~; }",
+            "while true; do rm x; done",
+            "until false; do rm x; done",
+            "true && ! rm x",
+            "time rm x",
+            "command rm x",
+            "builtin rm x",
+            "exec rm x",
+            "\\rm x",
+            "X=\"a b\" rm x",
+            "X='a b' Y=c rm x",
+            "if true; then time command \\rm x; fi",
+        ] {
+            assert_eq!(c.check(&Tool::Bash { command }, p), Some(false), "{command:?} was not denied");
+        }
+
+        assert_eq!(c.check(&Tool::Bash { command: "if true; then ls; fi" }, p), Some(true));
+        assert_eq!(c.check(&Tool::Bash { command: "echo rm" }, p), Some(true));
     }
 
     #[test]
