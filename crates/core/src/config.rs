@@ -194,7 +194,6 @@ mod tests {
         assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
-    use super::*;
     use crate::permission::Tool;
 
     // -----------------------------------------------------------------------
