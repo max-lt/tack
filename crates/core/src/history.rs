@@ -58,13 +58,25 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// A fresh, sortable session id (milliseconds since the Unix epoch).
+/// A fresh, sortable session id (milliseconds since the Unix epoch). Two
+/// calls in one millisecond get different ids: the second takes the next
+/// millisecond.
 pub fn new_id() -> String {
-    SystemTime::now()
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-        .to_string()
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+
+    let previous = LAST
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |last| Some(now.max(last + 1)),
+        )
+        .unwrap_or(0);
+
+    now.max(previous + 1).to_string()
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -590,6 +602,14 @@ mod tests {
         assert!(format!("{err:#}").contains("Failed to open the session lock"), "{err:#}");
 
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn new_ids_are_unique_within_one_millisecond() {
+        let ids: Vec<String> = (0..1000).map(|_| new_id()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+
+        assert_eq!(unique.len(), ids.len());
     }
 
     #[test]
