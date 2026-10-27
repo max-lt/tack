@@ -16,6 +16,16 @@ pub struct Store {
     pub terminals: Vec<TerminalEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitors: Vec<MonitorEntry>,
+    /// Highest ids ever used, also by entries that are gone: the history
+    /// names them, so a new entry must not reuse them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub highest_terminal_id: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub highest_monitor_id: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A command whose output wakes the model.
@@ -43,10 +53,11 @@ pub type SharedStore = Arc<Mutex<Store>>;
 
 impl Store {
     pub fn is_empty(&self) -> bool {
-        self.terminals.is_empty() && self.monitors.is_empty()
+        *self == Self::default()
     }
 
     pub fn add_monitor(&mut self, entry: MonitorEntry) {
+        self.highest_monitor_id = self.highest_monitor_id.max(entry.id);
         self.monitors.push(entry);
     }
 
@@ -55,10 +66,14 @@ impl Store {
     }
 
     pub fn last_monitor_id(&self) -> u32 {
-        self.monitors.iter().map(|m| m.id).max().unwrap_or(0)
+        self.monitors
+            .iter()
+            .map(|m| m.id)
+            .fold(self.highest_monitor_id, u32::max)
     }
 
     pub fn add_terminal(&mut self, entry: TerminalEntry) {
+        self.highest_terminal_id = self.highest_terminal_id.max(entry.id);
         self.terminals.push(entry);
     }
 
@@ -69,7 +84,10 @@ impl Store {
     /// The highest id ever handed out, so new terminals do not reuse an id
     /// the conversation already mentions.
     pub fn last_terminal_id(&self) -> u32 {
-        self.terminals.iter().map(|t| t.id).max().unwrap_or(0)
+        self.terminals
+            .iter()
+            .map(|t| t.id)
+            .fold(self.highest_terminal_id, u32::max)
     }
 
     /// Drop the terminals of a previous run and describe them for the model.
@@ -124,7 +142,8 @@ mod tests {
 
         let note = store.take_lost().unwrap();
         assert!(note.contains("terminal 3: npm run dev"), "{note}");
-        assert!(store.is_empty());
+        assert!(store.terminals.is_empty());
+        assert_eq!(store.last_terminal_id(), 3);
         assert_eq!(store.take_lost(), None);
     }
 

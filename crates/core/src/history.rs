@@ -18,8 +18,8 @@ use crate::store::Store;
 const PREVIEW_CHARS: usize = 80;
 
 /// Format of the session files this ccrs writes. A file without a version
-/// is format 1.
-const FORMAT_VERSION: u64 = 1;
+/// is format 1. Format 2 adds the highest terminal and monitor ids.
+const FORMAT_VERSION: u64 = 2;
 
 /// Most session files that `list` reads: the most recently changed ones.
 const MAX_LISTED: usize = 500;
@@ -884,6 +884,21 @@ mod tests {
         let started = std::time::Instant::now();
         let found = list_in(tmp.path(), Path::new("/p")).unwrap();
         eprintln!("listed {} in {:?}", found.len(), started.elapsed());
+    }
+
+    #[test]
+    fn version_1_and_version_2_files_load() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        for version in [1, 2] {
+            let id = format!("v{version}");
+            let mut json = json_of(&stored(&id, "/p", 1, "hi"));
+            json["version"] = version.into();
+            write_raw(tmp.path(), &id, &json.to_string());
+            load_from(tmp.path(), &id).unwrap();
+        }
+
+        assert_eq!(FORMAT_VERSION, 2);
     }
 
     #[test]

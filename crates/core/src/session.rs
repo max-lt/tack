@@ -365,11 +365,22 @@ impl<P: PermissionHandler> Session<P> {
         }
 
         let mut note = String::from("Monitors started again:");
+        let mut seen = std::collections::HashSet::new();
 
         for m in saved {
             // The session file can hold any text: escape it for the TUI.
             let shown_command = crate::monitor::escape(&m.command);
             let shown_description = crate::monitor::escape(&m.description);
+
+            if !seen.insert(m.id) {
+                write!(
+                    note,
+                    "\n- monitor {} dropped: {shown_description} ({shown_command}), the id is used twice",
+                    m.id
+                )
+                .unwrap();
+                continue;
+            }
 
             if self.monitors.list().len() >= crate::monitor::MAX_MONITORS {
                 write!(
@@ -724,8 +735,9 @@ mod tests {
         s.restore(saved);
 
         assert!(s.resume_note().unwrap().contains("terminal 4: psql"));
-        assert!(s.store().is_empty());
-        assert!(s.to_stored().unwrap().store.is_empty());
+        assert!(s.store().terminals.is_empty());
+        // The id stays taken: the history names terminal 4.
+        assert_eq!(s.to_stored().unwrap().store.highest_terminal_id, 4);
 
         let plan = crate::sandbox::host_terminal("true");
         let id = s.terminals.open(plan, Path::new("/"), 10, 40).unwrap();
@@ -802,6 +814,55 @@ mod tests {
         assert!(!note.contains('\u{1b}'), "{note:?}");
         assert!(!note.contains("\nThe user says"), "{note:?}");
         assert!(s.monitors.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_resume_starts_one_monitor_per_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut saved = stored(Some(1));
+        for description in ["first", "second", "third"] {
+            saved.store.add_monitor(crate::store::MonitorEntry {
+                id: 1,
+                command: "sleep 30".to_string(),
+                description: description.to_string(),
+                host: true,
+            });
+        }
+
+        s.restore(saved);
+        let note = s.restart_monitors().await.unwrap();
+
+        assert_eq!(s.monitors.list().len(), 1);
+        assert!(note.contains("- monitor 1 dropped: second (sleep 30), the id is used twice"), "{note}");
+        assert!(note.contains("- monitor 1 dropped: third"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn an_ended_monitor_keeps_its_id_after_a_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut events = s.take_monitor_events().unwrap();
+        s.monitors
+            .start(crate::sandbox::host_terminal("true"), dir.path(), "true", "x", true, Some(3))
+            .unwrap();
+        // Output event or end event: wait for the end.
+        while events.recv().await.unwrap().ended.is_none() {}
+        s.messages.push(Message {
+            role: "user".to_string(),
+            content: Content::text("monitor 3 ended"),
+        });
+
+        let saved = s.to_stored().unwrap();
+        let mut resumed = session_in(dir.path(), AllowAll);
+        resumed.restore(saved);
+        resumed.restart_monitors().await;
+
+        let id = resumed
+            .monitors
+            .start(crate::sandbox::host_terminal("sleep 30"), dir.path(), "sleep 30", "x", true, None)
+            .unwrap();
+        assert_eq!(id, 4);
     }
 
     #[tokio::test]

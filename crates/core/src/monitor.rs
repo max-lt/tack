@@ -149,6 +149,19 @@ impl Monitors {
             )));
         }
 
+        // An id from a session file can repeat, or be the last u32.
+        let id = match id {
+            Some(id) if self.running.lock().unwrap().contains_key(&id) => {
+                return Err(std::io::Error::other(format!("monitor {id} runs already")));
+            }
+            Some(id) => id,
+            None => self
+                .next_id
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| last.checked_add(1))
+                .map(|last| last + 1)
+                .map_err(|_| std::io::Error::other("no monitor id left"))?,
+        };
+
         let mut child = tokio::process::Command::new(&plan.program)
             .args(&plan.args)
             .current_dir(cwd)
@@ -170,7 +183,6 @@ impl Monitors {
             registry: self.registry,
         };
 
-        let id = id.unwrap_or_else(|| self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
         let entry = MonitorEntry {
             id,
             command: command.to_string(),
@@ -1286,6 +1298,29 @@ mod tests {
 
         assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes");
         assert!(event.dropped > 0);
+    }
+
+    #[tokio::test]
+    async fn an_id_that_runs_cannot_start_twice() {
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        let start_as = |id| monitors.start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", "x", false, Some(id));
+
+        start_as(1).unwrap();
+        let err = start_as(1).unwrap_err();
+
+        assert!(err.to_string().contains("monitor 1 runs already"), "{err}");
+        assert_eq!(monitors.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_last_id_is_an_error_not_an_overflow() {
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        monitors.reserve(u32::MAX);
+
+        let err = monitors
+            .start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", "x", false, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("no monitor id left"), "{err}");
     }
 
     #[test]

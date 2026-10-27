@@ -193,6 +193,16 @@ Known limits:
 - SIGKILL on `ccrs` does not stop the monitors.
 - In the sandbox, a stop kills the `container exec` client. A process in the VM can run until the VM stops, 5 minutes after the last command.
 
+### Session files
+
+`ccrs` saves each session in `sessions/<id>.json` in its config directory.
+
+- Format version 2. `ccrs` reads versions 1 and 2. It refuses a file with a higher version, so that a save cannot erase fields it does not know. An older `ccrs` refuses a version 2 file.
+- Version 2 adds the highest terminal and monitor ids ever used, so that a new terminal or monitor does not take the id of one that the history names.
+- The directories have mode 0700 and the files mode 0600. A directory that belongs to another user is refused.
+- One `ccrs` process at a time opens a session. A second one stops with an error.
+- A file over 64 MiB, or a symbolic link, is refused.
+
 ## Architecture
 
 ```
