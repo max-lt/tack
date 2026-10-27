@@ -502,6 +502,58 @@ mod tests {
         assert!(err.to_string().contains("no terminal id left"), "{err}");
     }
 
+    /// Run `command` and read it within `timeout`. Returns the screen and
+    /// the time the read took.
+    async fn read_of(command: &str, timeout: Duration, first: bool) -> (String, Duration) {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        let id = terminals
+            .open(host_terminal(command), dir.path(), MAX_ROWS, MAX_COLS)
+            .unwrap();
+
+        let started = Instant::now();
+        let snapshot = match first {
+            true => terminals.read_first(id, timeout).await,
+            false => terminals.read(id, None, timeout).await,
+        }
+        .unwrap();
+        let took = started.elapsed();
+
+        terminals.close(id).unwrap();
+        (snapshot.screen, took)
+    }
+
+    #[tokio::test]
+    async fn output_without_end_stops_the_read_at_its_timeout() {
+        let (screen, took) = read_of("yes 'no end'", Duration::from_secs(1), false).await;
+
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert!(screen.contains("no end"));
+        assert!(screen.len() <= MAX_SCREEN_BYTES + 40, "{} bytes", screen.len());
+    }
+
+    #[tokio::test]
+    async fn binary_output_comes_back_escaped_and_bounded() {
+        let (screen, took) = read_of(
+            "head -c 2000000 /dev/urandom; sleep 5",
+            Duration::from_secs(3),
+            true,
+        )
+        .await;
+
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(screen.len() <= MAX_SCREEN_BYTES + 40, "{} bytes", screen.len());
+        assert!(!screen.chars().any(|c| c != '\n' && crate::escape::is_hidden(c)));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_never_prints_returns_at_the_timeout() {
+        let (screen, took) = read_of("sleep 30", Duration::from_secs(1), true).await;
+
+        assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(2), "{took:?}");
+        assert!(screen.is_empty(), "{screen:?}");
+    }
+
     #[test]
     fn keys_are_translated() {
         assert_eq!(parse_keys("ls<Enter>"), b"ls\r");

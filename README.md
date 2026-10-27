@@ -169,6 +169,8 @@ Three layers, merged in order:
 
 The model gets the screen with control and invisible characters as `\xNN` and `\u{N}` text, as for monitor output.
 
+A read waits until the output settles, or until the text it waits for appears, for its timeout at most: 10 s by default, 120 s at most. A command that prints without end, prints binary data or never prints does not hold a read longer. The screen keeps no scrollback, so the memory of a terminal does not grow with its output.
+
 A close, the end of the session, SIGTERM and SIGHUP kill the process group of the terminal command, also a child that ignores SIGHUP. The limits of monitors apply: a process that leaves the group (`setsid`, a daemon) and SIGKILL on `ccrs` are not covered.
 
 ### Monitors
