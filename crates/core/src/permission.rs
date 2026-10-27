@@ -209,16 +209,17 @@ impl PermissionConfig {
         // File operations in allowed directories are auto-allowed
         match tool {
             Tool::Read { path } | Tool::Write { path } | Tool::Edit { path } => {
-                let resolved = resolve_path(path, project_dir);
+                let resolved = real_path(path, project_dir);
+                let root = Path::new("/");
 
-                if resolved.starts_with(project_dir) {
+                if resolved.starts_with(real_path(project_dir, root)) {
                     return Some(true);
                 }
 
                 if self
                     .additional_directories
                     .iter()
-                    .any(|dir| resolved.starts_with(dir))
+                    .any(|dir| resolved.starts_with(real_path(dir, root)))
                 {
                     return Some(true);
                 }
@@ -428,12 +429,44 @@ fn is_readonly_git_command(subcommand: &str) -> bool {
 }
 
 /// Resolve a potentially relative path against the project directory.
-fn resolve_path(path: &Path, project_dir: &Path) -> PathBuf {
-    if path.is_absolute() {
+/// The path that the system opens for `path`, relative to `base`. Each
+/// part that exists is resolved, links included, before the next part, as
+/// the kernel does: `link/..` is the parent of the link target. After the
+/// first part that does not exist, the rest is taken as written: a path
+/// that does not exist holds no link.
+fn real_path(path: &Path, base: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        project_dir.join(path)
+        base.join(path)
+    };
+
+    let mut real = PathBuf::new();
+    let mut exists = true;
+
+    for part in joined.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir => real.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                real.pop();
+            }
+            Component::Normal(name) => {
+                real.push(name);
+
+                if exists {
+                    match real.canonicalize() {
+                        Ok(resolved) => real = resolved,
+                        Err(_) => exists = false,
+                    }
+                }
+            }
+        }
     }
+
+    real
 }
 
 #[cfg(test)]
@@ -630,6 +663,47 @@ mod tests {
         }
 
         assert_eq!(send("ls -la<Enter>"), Some(true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_path_must_stay_in_the_project_after_dots_and_links() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let outside = root.path().join("outside");
+        let extra = root.path().join("extra");
+        for dir in [&project, &outside, &extra] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, project.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside, extra.join("link")).unwrap();
+        std::fs::write(outside.join("existing"), "x").unwrap();
+
+        let c = PermissionConfig {
+            additional_directories: vec![extra.clone()],
+            ..Default::default()
+        };
+        let write = |path: PathBuf| c.check(&Tool::Write { path: &path }, &project);
+
+        // Inside: allowed, also for a file that does not exist yet.
+        assert_eq!(write(project.join("src/new.rs")), Some(true));
+        assert_eq!(write(PathBuf::from("src/new.rs")), Some(true));
+        assert_eq!(write(project.join("a/../b.rs")), Some(true));
+        assert_eq!(write(extra.join("notes.md")), Some(true));
+
+        // Outside: asked.
+        for path in [
+            project.join("../outside/existing"),
+            project.join("../../../etc/zshrc"),
+            PathBuf::from("../outside/new"),
+            project.join("link/existing"),
+            project.join("link/new-file"),
+            project.join("link/../link/existing"),
+            extra.join("../outside/existing"),
+            extra.join("link/new-file"),
+        ] {
+            assert_eq!(write(path.clone()), None, "{} was allowed", path.display());
+        }
     }
 
     #[test]
