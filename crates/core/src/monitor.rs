@@ -117,6 +117,8 @@ pub struct Monitors {
     wake_ups: Arc<Mutex<VecDeque<Duration>>>,
     /// Set when someone delivers the events to the model. ccrs -p does not.
     listened: std::sync::atomic::AtomicBool,
+    /// The clock of the wake-up windows. It must count sleep.
+    clock: Arc<dyn Fn() -> Duration + Send + Sync>,
 }
 
 impl Monitors {
@@ -138,6 +140,7 @@ impl Monitors {
             registry,
             wake_ups: Arc::default(),
             listened: std::sync::atomic::AtomicBool::new(false),
+            clock: Arc::new(since_boot),
         };
 
         (Arc::new(monitors), rx)
@@ -255,6 +258,7 @@ impl Monitors {
         let store = self.store.clone();
         let running = self.running.clone();
         let wake_ups = self.wake_ups.clone();
+        let clock = self.clock.clone();
         let description = description.to_string();
         let lease = plan.lease;
 
@@ -362,7 +366,7 @@ impl Monitors {
                     }
                 }
 
-                let now = since_boot();
+                let now = clock();
 
                 if !take_wake_up(
                     &mut wake_ups.lock().unwrap(),
@@ -409,6 +413,14 @@ impl Monitors {
         running.stop.cancel();
         self.store.lock().unwrap().remove_monitor(id);
         true
+    }
+
+    /// Use `clock` for the wake-up windows, in tests.
+    #[cfg(test)]
+    fn with_clock(self: Arc<Self>, clock: Arc<dyn Fn() -> Duration + Send + Sync>) -> Arc<Self> {
+        let mut monitors = Arc::into_inner(self).expect("no other reference yet");
+        monitors.clock = clock;
+        Arc::new(monitors)
     }
 
     /// Record that the events reach the model.
@@ -1592,17 +1604,73 @@ mod tests {
         assert_eq!(window.len(), 1);
     }
 
+    fn read_clock(clock: libc::clockid_t) -> Duration {
+        // SAFETY: as in since_boot.
+        let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+        unsafe { libc::clock_gettime(clock, &mut now) };
+        Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+    }
+
+    /// The clock of the windows must count sleep. A fake clock jumps an
+    /// hour after 9 events, as after a sleep that tokio's clock does not
+    /// see: the 10th event then passes. With no jump, it stops the monitor.
+    #[tokio::test]
+    async fn a_jump_of_the_window_clock_resets_the_wake_up_limit() {
+        for jump in [false, true] {
+            let time = Arc::new(std::sync::atomic::AtomicU64::new(1000));
+            let clock = time.clone();
+            let (monitors, mut rx) = Monitors::new(SharedStore::default());
+            let monitors = monitors.with_clock(Arc::new(move || {
+                Duration::from_secs(clock.load(Ordering::SeqCst))
+            }));
+            // One line every 0.4 s: each line is an event.
+            let cmd = "for i in $(seq 1 12); do echo $i; sleep 0.4; done";
+            start(&monitors, cmd);
+
+            let mut events = 0;
+            let ended = loop {
+                let event = next(&mut rx).await;
+                if let Some(ended) = event.ended {
+                    break ended;
+                }
+                events += 1;
+                if jump && events == MAX_EVENTS_PER_MINUTE - 1 {
+                    time.fetch_add(3600, Ordering::SeqCst);
+                }
+            };
+
+            if jump {
+                assert_eq!(events, 12, "the monitor stopped after the sleep: {ended}");
+            } else {
+                assert_eq!(events, MAX_EVENTS_PER_MINUTE, "{ended}");
+                assert!(ended.contains("the limit"), "{ended}");
+            }
+        }
+    }
+
+    /// The window clock is CLOCK_MONOTONIC, which counts sleep on macOS,
+    /// not CLOCK_UPTIME_RAW, the clock of Instant, which stops in sleep.
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_window_clock_counts_sleep() {
-        // SAFETY: as in since_boot.
-        let mut raw: libc::timespec = unsafe { std::mem::zeroed() };
-        unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut raw) };
-        let uptime = Duration::new(raw.tv_sec as u64, raw.tv_nsec as u32);
+    fn the_window_clock_is_the_one_that_counts_sleep_on_macos() {
+        let before = read_clock(libc::CLOCK_MONOTONIC);
+        let ours = since_boot();
+        let after = read_clock(libc::CLOCK_MONOTONIC);
 
-        // CLOCK_UPTIME_RAW, the clock of Instant, stops in sleep. The window
-        // clock is ahead of it by the time the machine slept, never behind.
-        assert!(since_boot() >= uptime);
+        assert!(before <= ours && ours <= after, "{before:?} {ours:?} {after:?}");
+    }
+
+    /// CLOCK_BOOTTIME counts sleep on Linux; CLOCK_MONOTONIC does not, so
+    /// the window clock is never behind it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_window_clock_is_the_one_that_counts_sleep_on_linux() {
+        let before = read_clock(libc::CLOCK_BOOTTIME);
+        let ours = since_boot();
+        let after = read_clock(libc::CLOCK_BOOTTIME);
+
+        assert!(before <= ours && ours <= after, "{before:?} {ours:?} {after:?}");
+        assert!(ours >= read_clock(libc::CLOCK_MONOTONIC) - Duration::from_millis(10));
     }
 
     #[tokio::test]
