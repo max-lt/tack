@@ -205,6 +205,19 @@ mod tests {
     }
 
     #[test]
+    fn a_crosstalk_send_shows_the_peer_and_the_whole_text_escaped() {
+        let text = describe(&Tool::Crosstalk {
+            action: "send",
+            peer: "crosstalk_AAAA",
+            text: "line one\nline two \u{202e}hidden",
+        });
+
+        assert!(text.contains("crosstalk_AAAA"), "{text}");
+        assert!(text.contains("line one") && text.contains("line two"), "{text}");
+        assert!(!text.contains('\u{202e}') && text.contains("\\u{202e}"), "{text:?}");
+    }
+
+    #[test]
     fn a_monitor_description_cannot_add_a_line_to_the_prompt() {
         let text = describe(&Tool::Monitor {
             command: "tail -F log",

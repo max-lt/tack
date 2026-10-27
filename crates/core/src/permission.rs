@@ -382,6 +382,13 @@ fn is_prefix_rule(rule: &str) -> bool {
 /// names one command; it does not cover a command with a shell
 /// metacharacter, such as `tail x; rm -rf ~`. That command is asked.
 fn allow_matches(rule: &str, tool: &Tool<'_>) -> bool {
+    // A crosstalk action sends data to another person. An allow rule must
+    // name the action and the peer, with no wildcard.
+    if let Tool::Crosstalk { action, peer, .. } = tool {
+        return parse_rule(rule)
+            .is_some_and(|(name, pattern)| name == "Crosstalk" && pattern == format!("{action} {peer}"));
+    }
+
     let command = match tool {
         Tool::Bash { command }
         | Tool::Monitor { command, .. }
@@ -800,6 +807,30 @@ mod tests {
 
         assert_eq!(c.check(&Tool::Bash { command: "if true; then ls; fi" }, p), Some(true));
         assert_eq!(c.check(&Tool::Bash { command: "echo rm" }, p), Some(true));
+    }
+
+    #[test]
+    fn a_crosstalk_allow_rule_must_name_the_peer() {
+        let p = Path::new("/project");
+        let a = "crosstalk_AAAA";
+        let b = "crosstalk_BBBB";
+        let tool = |action, peer| Tool::Crosstalk { action, peer, text: "hello" };
+
+        for wide in ["Crosstalk(*)", "Crosstalk(send:*)", "Crosstalk(connect:*)", "Crosstalk(forget:*)"] {
+            let c = config(&[wide], &[]);
+            for action in ["send", "connect", "forget"] {
+                assert_eq!(c.check(&tool(action, a), p), None, "{wide} allowed {action}");
+            }
+        }
+
+        let c = config(&["Crosstalk(send crosstalk_AAAA)"], &[]);
+        assert_eq!(c.check(&tool("send", a), p), Some(true));
+        assert_eq!(c.check(&tool("send", b), p), None);
+        assert_eq!(c.check(&tool("forget", a), p), None);
+
+        // Deny rules can be wide.
+        let c = config(&["Crosstalk(send crosstalk_AAAA)"], &["Crosstalk(send:*)"]);
+        assert_eq!(c.check(&tool("send", a), p), Some(false));
     }
 
     #[test]

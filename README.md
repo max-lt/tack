@@ -144,7 +144,7 @@ Create `.claude/settings.local.json` in your project:
 - A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`. A deny rule checks each command of a chain: `Bash(rm:*)` denies `ls; rm x`, `tail $(rm y)`, `FOO=1 rm x` and `X="a b" rm x`. It skips the reserved words and wrappers in front of a command (`if`, `then`, `else`, `elif`, `do`, `while`, `until`, `!`, `{`, `time`, `command`, `builtin`, `exec`) and a backslash in front of the command word (`\rm`).
 - A deny rule is a guard, not a sandbox. It matches the start of a command, so `sudo rm`, `/bin/rm`, `env rm`, `nohup rm`, `bash -c "rm x"`, `eval "rm x"`, `xargs rm` or `find -delete` do not match `Bash(rm:*)`. To contain commands, use `--sandbox`.
 - No allow rule covers `Monitor` or `TerminalOpen` with `host: true`, or `TerminalSend` into a terminal that runs on the host. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
-- `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
+- `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine. An allow rule must name the action and the peer, such as `Crosstalk(send crosstalk_<id>)`; `Crosstalk(*)` or `Crosstalk(send:*)` allow nothing. Deny rules can use wildcards. The prompt shows the peer and the whole text, escaped.
 - `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
 
 Three layers, merged in order:
