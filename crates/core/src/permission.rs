@@ -138,6 +138,27 @@ impl PermissionConfig {
             }
         }
 
+        // Text typed into a terminal runs as shell lines. A key token, such
+        // as <Tab> or <C-m>, can start or change a line: split there too.
+        if let Tool::TerminalSend { input } = tool {
+            for part in typed_parts(input).into_iter().flat_map(commands_in) {
+                let bash = Tool::Bash { command: part };
+                let typed = Tool::TerminalSend { input: part };
+
+                if self
+                    .deny
+                    .iter()
+                    .any(|r| rule_matches(r, &bash) || rule_matches(r, &typed))
+                {
+                    return Some(false);
+                }
+            }
+
+            if self.typed_lines_allowed(input) {
+                return Some(true);
+            }
+        }
+
         // Changes from a sandbox are a set of writes: a deny rule on any of
         // them refuses the set. No rule allows them without asking.
         if let Tool::ApplyChanges { changes, .. } = tool {
@@ -254,6 +275,54 @@ fn with_command<'a>(tool: &Tool<'a>, command: &'a str) -> Tool<'a> {
     }
 }
 
+/// Text and lines of TerminalSend input, split at each key token such as
+/// `<Enter>` or `<Tab>` and at each line break.
+fn typed_parts(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut rest = input;
+
+    while let Some(start) = rest.find('<') {
+        parts.push(&rest[..start]);
+        rest = match rest[start..].find('>') {
+            Some(end) => &rest[start + end + 1..],
+            None => &rest[start + 1..],
+        };
+    }
+    parts.push(rest);
+
+    parts
+        .into_iter()
+        .flat_map(|part| part.split(['\n', '\r']))
+        .filter(|part| !part.trim().is_empty())
+        .collect()
+}
+
+impl PermissionConfig {
+    /// Whether prefix rules allow each line of TerminalSend input. The
+    /// lines are the text between `<Enter>` and line breaks. Another key
+    /// token stays in its line, and its `<` makes the line ask: `<Up>` or
+    /// `<Tab>` can make the shell run a line that is not the text.
+    fn typed_lines_allowed(&self, input: &str) -> bool {
+        let lines: Vec<&str> = input
+            .split("<Enter>")
+            .flat_map(|chunk| chunk.split(['\n', '\r']))
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+
+        !lines.is_empty()
+            && lines.iter().all(|line| {
+                !line.contains(SHELL_METACHARACTERS)
+                    && self.allow.iter().any(|rule| {
+                        is_prefix_rule(rule) && rule_matches(rule, &Tool::TerminalSend { input: line })
+                    })
+            })
+    }
+}
+
+fn is_prefix_rule(rule: &str) -> bool {
+    parse_rule(rule).is_some_and(|(_, pattern)| pattern.ends_with(":*"))
+}
+
 /// `rule_matches` for an allow rule. A prefix rule such as `Bash(tail:*)`
 /// names one command; it does not cover a command with a shell
 /// metacharacter, such as `tail x; rm -rf ~`. That command is asked.
@@ -262,12 +331,13 @@ fn allow_matches(rule: &str, tool: &Tool<'_>) -> bool {
         Tool::Bash { command }
         | Tool::Monitor { command, .. }
         | Tool::TerminalOpen { command, .. } => Some(*command),
+        // Prefix rules for typed text are checked line by line, in
+        // `typed_lines_allowed`.
+        Tool::TerminalSend { .. } if is_prefix_rule(rule) => return false,
         _ => None,
     };
 
-    let prefix_rule = parse_rule(rule).is_some_and(|(_, pattern)| pattern.ends_with(":*"));
-
-    if prefix_rule && command.is_some_and(|c| c.contains(SHELL_METACHARACTERS)) {
+    if is_prefix_rule(rule) && command.is_some_and(|c| c.contains(SHELL_METACHARACTERS)) {
         return false;
     }
 
@@ -487,6 +557,55 @@ mod tests {
         // Variable assignments before the command do not hide it.
         assert_eq!(c.check(&Tool::Bash { command: "FOO=1 rm -rf x" }, p), Some(false));
         assert_eq!(c.check(&Tool::Bash { command: "ls; FOO=1 BAR=2 rm x" }, p), Some(false));
+    }
+
+    #[test]
+    fn a_prefix_allow_rule_checks_each_line_typed_into_a_terminal() {
+        let c = config(&["TerminalSend(ls:*)"], &[]);
+        let p = Path::new("/project");
+        let send = |input| c.check(&Tool::TerminalSend { input }, p);
+
+        assert_eq!(send("ls -la<Enter>"), Some(true));
+        assert_eq!(send("ls<Enter>ls -a<Enter>"), Some(true));
+
+        for input in [
+            "ls; rm -rf ~<Enter>",
+            "ls | sh<Enter>",
+            "ls $(rm y)<Enter>",
+            "ls<Enter>rm -rf ~<Enter>",
+            "ls\nrm -rf ~",
+            "ls\rrm -rf ~",
+            "ls<C-m>rm -rf ~<Enter>", // C-m is a second Enter
+            "ls<Up><Enter>",          // history: the line that runs is not the text
+            "ls<Tab><Enter>",
+            "ls<Foo><Enter>",         // unknown token
+        ] {
+            assert_eq!(send(input), None, "{input:?} was allowed");
+        }
+
+        // The wildcard allows any input; an exact rule matches as written.
+        let all = config(&["TerminalSend(*)"], &[]);
+        assert_eq!(all.check(&Tool::TerminalSend { input: "ls<Up><Enter>" }, p), Some(true));
+    }
+
+    #[test]
+    fn a_deny_rule_checks_each_line_typed_into_a_terminal() {
+        let c = config(&["TerminalSend(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+        let send = |input| c.check(&Tool::TerminalSend { input }, p);
+
+        for input in [
+            "rm -rf ~<Enter>",
+            "ls<Enter>rm -rf ~<Enter>",
+            "echo hi; rm x<Enter>",
+            "ls<Tab>rm x",
+            "ls<C-j>FOO=1 rm x<Enter>",
+            "ls\nrm x",
+        ] {
+            assert_eq!(send(input), Some(false), "{input:?} was not denied");
+        }
+
+        assert_eq!(send("ls -la<Enter>"), Some(true));
     }
 
     #[test]
