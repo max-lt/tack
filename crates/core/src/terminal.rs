@@ -102,6 +102,13 @@ impl Terminals {
             )));
         }
 
+        // An id from a session file can be the last u32.
+        let id = self
+            .next_id
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| last.checked_add(1))
+            .map(|last| last + 1)
+            .map_err(|_| io::Error::other("no terminal id left"))?;
+
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows,
@@ -148,7 +155,6 @@ impl Terminals {
             shared.ended.store(true, Ordering::SeqCst);
         });
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
 
         self.open.lock().unwrap().insert(
             id,
@@ -482,6 +488,18 @@ mod tests {
         assert!(gone_soon(&pid).await, "child {pid} outlived kill_all");
         let err = terminals.open(host_terminal("true"), dir.path(), 24, 80).unwrap_err();
         assert!(err.to_string().contains("exiting"), "{err}");
+    }
+
+    #[test]
+    fn the_last_id_is_an_error_not_an_overflow() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        terminals.reserve(u32::MAX);
+
+        let err = terminals
+            .open(host_terminal("true"), dir.path(), 24, 80)
+            .unwrap_err();
+        assert!(err.to_string().contains("no terminal id left"), "{err}");
     }
 
     #[test]
