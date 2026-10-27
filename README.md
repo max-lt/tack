@@ -185,6 +185,7 @@ Permissions and resume:
 Stop:
 
 - A stop, the end of the command, the exit of `ccrs`, SIGTERM and SIGHUP kill the process group of the command.
+- `/clear` stops every monitor. The file of the old session keeps them, so a resume of that session offers to start them again.
 - After SIGTERM or SIGHUP, `ccrs` exits with code 143 or 129.
 
 Known limits:

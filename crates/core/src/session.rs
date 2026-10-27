@@ -275,7 +275,16 @@ impl<P: PermissionHandler> Session<P> {
     /// Start a new conversation with a new id. With a lock, the new id is
     /// locked and the old one released; an error means the new id is not
     /// locked, and the conversation is cleared all the same.
+    ///
+    /// The monitors of the old conversation stop. Its session file keeps
+    /// them, so a resume of it offers to start them again.
     pub fn clear(&mut self) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.monitors.stop_all();
+            self.saved_monitors.clear();
+        }
+
         self.messages.truncate(self.bootstrap_len);
         // The old conversation stays on disk and remains resumable.
         self.id = history::new_id();
@@ -1052,6 +1061,44 @@ mod tests {
         assert_ne!(s.id(), old);
         assert!(history::lock_in(dir.path(), s.id()).is_err());
         history::tests::lock_soon(dir.path(), &old);
+    }
+
+    #[tokio::test]
+    async fn clear_stops_the_monitors_of_the_old_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut events = s.take_monitor_events().unwrap();
+        let cmd = "echo $$; sleep 300";
+        s.monitors
+            .start(
+                crate::sandbox::host_terminal(cmd),
+                dir.path(),
+                crate::monitor::Spec {
+                    command: cmd,
+                    description: "x",
+                    place: crate::monitor::Place::Host,
+                    id: None,
+                },
+            )
+            .unwrap();
+        let pid = events.recv().await.unwrap().lines.remove(0);
+
+        s.clear().unwrap();
+
+        assert!(s.monitors.list().is_empty());
+        assert!(s.store().monitors.is_empty());
+        assert_eq!(s.store().highest_monitor_id, 1);
+
+        let mut gone = false;
+        for _ in 0..50 {
+            let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap();
+            if !alive.success() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "monitor command {pid} outlived /clear");
     }
 
     #[test]

@@ -372,6 +372,15 @@ impl Monitors {
         true
     }
 
+    /// Stop every monitor.
+    pub fn stop_all(&self) {
+        let ids: Vec<u32> = self.running.lock().unwrap().keys().copied().collect();
+
+        for id in ids {
+            self.stop(id);
+        }
+    }
+
     /// Running monitors, by id.
     pub fn list(&self) -> Vec<MonitorEntry> {
         let mut list: Vec<_> = self
