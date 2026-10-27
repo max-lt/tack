@@ -131,16 +131,38 @@ Three layers, merged in order:
 
 ### Monitors
 
-The `Monitor` tool runs a command in the background. Each line of output wakes the model.
+The `Monitor` tool runs a command in the background. Each line that the command writes to stdout or stderr wakes the model. `MonitorList` lists the monitors. `MonitorStop` stops one.
 
-- A session runs 8 monitors or fewer.
-- A monitor stops after 10 events in one minute.
-- A resumed session asks again before it starts a saved monitor.
-- A stop, an exit, SIGTERM and SIGHUP kill the process group of the command.
+| Limit | Value | When the limit is reached |
+|-------|-------|---------------------------|
+| Monitors that run at one time, per session | 8 | `Monitor` returns an error. At resume, the note lists the monitors that did not start. |
+| Events per minute, per monitor | 10 | The monitor stops. Its last event gives the reason to the model. |
+| Events per minute, all monitors of a session | 20 | The monitor that goes over the limit stops. Its last lines are not sent. |
+| Lines in one event | 100 | The event tells how many lines it dropped. |
+| Bytes in one line | 1000 | The line is cut and ends with an ellipsis (U+2026). |
+
+Lines that come less than 300 ms apart go into one event. An event stays open for 2 s or less.
+
+Output:
+
+- The model gets the output as quoted data, not as an instruction.
+- Bytes that are not UTF-8 become U+FFFD.
+- Control characters, except tab, become `\xNN` text. An escape code in a log does not change the terminal.
+
+Permissions and resume:
+
+- `Monitor` asks for permission, like `Bash`. A rule such as `Monitor(tail:*)` allows it. `MonitorList` and `MonitorStop` do not ask.
+- The session file keeps the monitors. A resumed session asks again before it starts each one, because the file can change between runs.
+- `ccrs -p` does not start the saved monitors.
+
+Stop:
+
+- A stop, the end of the command, the exit of `ccrs`, SIGTERM and SIGHUP kill the process group of the command.
+- After SIGTERM or SIGHUP, `ccrs` exits with code 143 or 129.
 
 Known limits:
 
-- A process that leaves the process group (`setsid`, a daemon) does not stop with the monitor.
+- A process that leaves the process group (`setsid`, a daemon) does not stop with the monitor. The model gets this warning.
 - SIGKILL on `ccrs` does not stop the monitors.
 - In the sandbox, a stop kills the `container exec` client. A process in the VM can run until the VM stops, 5 minutes after the last command.
 
