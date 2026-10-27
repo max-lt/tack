@@ -112,7 +112,7 @@ impl Terminals {
         Ok(id)
     }
 
-    /// Hand out ids above `last` from now on.
+    /// Give new terminals ids above `last`.
     pub fn reserve(&self, last: u32) {
         self.next_id.fetch_max(last, Ordering::SeqCst);
     }

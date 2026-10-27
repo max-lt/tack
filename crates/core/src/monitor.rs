@@ -114,7 +114,7 @@ impl Monitors {
         (Arc::new(monitors), rx)
     }
 
-    /// Hand out ids above `last` from now on.
+    /// Give new monitors ids above `last`.
     pub fn reserve(&self, last: u32) {
         self.next_id.fetch_max(last, Ordering::SeqCst);
     }
@@ -470,7 +470,7 @@ fn take_wake_up(window: &mut VecDeque<Duration>, now: Duration, max: usize) -> b
 static REGISTRY: Registry = Registry::new();
 
 /// Kill the commands of every monitor in this process, and refuse new
-/// monitors from now on. For a process that exits without unwinding, such
+/// monitors after it. For a process that exits without unwinding, such
 /// as on SIGTERM: the monitors run in their own process groups, so a signal
 /// to this process does not reach them.
 pub fn kill_all() {
