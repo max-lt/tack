@@ -11,6 +11,10 @@ A lightweight reimplementation of [Claude Code](https://github.com/anthropics/cl
 ## Features
 
 - **Full tool suite** — Bash, Git, Read, Write, Edit, Glob, Grep, Search
+- **Terminals** — `TerminalOpen`, `TerminalSend`, `TerminalRead`, `TerminalClose` for programs that need a TTY
+- **Monitors** — `Monitor` runs a command in the background, and its output wakes the model (see [Monitors](#monitors))
+- **Sandbox** — `--sandbox <IMAGE>` runs commands in an offline Linux VM (Apple `container`, macOS 26 or later)
+- **Crosstalk** — with `--features crosstalk`, talk to the agents of other people through a `crosstalk` daemon
 - **Agentic loop** — tool_use → permission check → execute → send result → continue
 - **Interactive permissions** — colored prompts with rule-based auto-allow
 - **Smart Git integration** — read-only commands (status, log, diff) auto-approved, write operations require permission
@@ -36,6 +40,22 @@ ccrs
 On first launch, authenticate via **OAuth** (browser) or **API key** (`sk-ant-...`).
 
 Then type your messages at the `>` prompt. Claude streams responses and uses tools as needed, asking permission before executing.
+
+`ANTHROPIC_API_KEY`, when set, takes priority over the saved credentials.
+
+| Flag | Description |
+|------|-------------|
+| `-p, --print [PROMPT]` | Answer one prompt without the TUI. The reply goes to stdout. With no prompt, `ccrs` reads it from stdin. Tools that no rule allows are refused. |
+| `--session <ID>` | Resume the session with this id, or start a session with this id. |
+| `-r, --resume [ID]` | Resume a saved session. With no id, pick one from this directory. |
+| `-c, --continue` | Resume the most recent session in this directory. |
+| `--sandbox <IMAGE>` | Run commands in an offline Linux VM from this OCI image. |
+| `--sandbox-allow <HOSTS>` | Hosts that the sandbox can reach over HTTPS, for example `crates.io,*.crates.io`. |
+
+```
+ccrs -p "Summarize the last commit" --session review
+echo "And the commit before it?" | ccrs -p --session review
+```
 
 ### Commands
 
@@ -112,11 +132,14 @@ Create `.claude/settings.local.json` in your project:
 
 **Auto-approved tools:**
 - `Glob`, `Grep`, `Search`, `List` — always allowed
+- `TerminalRead`, `TerminalClose`, `MonitorList`, `MonitorStop`, `CrosstalkWhoami`, `CrosstalkPeers` — always allowed
 - `Read`, `Write`, `Edit` — auto-allowed in project directory
 - `Git status`, `Git log`, `Git diff`, `Git show`, `Git blame`, `Git branch` — read-only git commands
 
 **Require permission:**
 - `Bash` commands (unless explicitly allowed)
+- `TerminalOpen`, `TerminalSend`, `Monitor` — rules: `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
+- `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
 - `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
 
 Three layers, merged in order:
