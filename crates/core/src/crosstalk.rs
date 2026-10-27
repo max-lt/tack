@@ -222,6 +222,47 @@ fn check_socket(socket: &Node, parent: &Node, me: u32) -> Result<()> {
     Ok(())
 }
 
+/// Most crosstalk events that reach the model in one minute.
+pub const MAX_PER_MINUTE: usize = 10;
+/// Most crosstalk events that reach the model in one session.
+pub const MAX_PER_SESSION: usize = 200;
+
+/// How many crosstalk events may still wake the model. Each one costs a
+/// turn, and a peer chooses how many it sends.
+#[derive(Default)]
+pub struct Budget {
+    recent: std::collections::VecDeque<Duration>,
+    total: usize,
+}
+
+impl Budget {
+    /// Count up to `wanted` events at `now`, a time that counts sleep.
+    /// Returns how many pass; the others are dropped.
+    pub fn admit(&mut self, now: Duration, wanted: usize) -> usize {
+        while self
+            .recent
+            .front()
+            .is_some_and(|&t| now.saturating_sub(t) >= Duration::from_secs(60))
+        {
+            self.recent.pop_front();
+        }
+
+        let room = MAX_PER_MINUTE
+            .saturating_sub(self.recent.len())
+            .min(MAX_PER_SESSION.saturating_sub(self.total));
+        let admitted = wanted.min(room);
+
+        self.recent.extend(std::iter::repeat_n(now, admitted));
+        self.total += admitted;
+        admitted
+    }
+
+    /// Admit at the current time.
+    pub fn admit_now(&mut self, wanted: usize) -> usize {
+        self.admit(crate::monitor::since_boot(), wanted)
+    }
+}
+
 /// One drained event: `[kind] from <id> via <hub> (<description>)` then the
 /// content.
 #[derive(Debug, PartialEq)]
@@ -381,6 +422,28 @@ mod tests {
 
         assert!(text.len() <= MAX_EVENT_BYTES + 400, "{} bytes", text.len());
         assert!(text.contains("bytes not shown"), "{text}");
+    }
+
+    #[test]
+    fn the_budget_admits_a_few_messages_a_minute_and_a_cap_per_session() {
+        let mut budget = Budget::default();
+        let t = |secs| Duration::from_secs(secs);
+        let mut total = 0;
+
+        total += budget.admit(t(0), 4);
+        assert_eq!(total, 4);
+        total += budget.admit(t(10), 10);
+        assert_eq!(total, MAX_PER_MINUTE);
+        assert_eq!(budget.admit(t(20), 1), 0);
+        // A minute later the window is free again.
+        total += budget.admit(t(80), 1);
+        assert_eq!(total, MAX_PER_MINUTE + 1);
+
+        // Over a long time, the session cap holds.
+        for minute in 2..400 {
+            total += budget.admit(t(minute * 60), MAX_PER_MINUTE);
+        }
+        assert_eq!(total, MAX_PER_SESSION);
     }
 
     #[test]

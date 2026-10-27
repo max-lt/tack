@@ -468,7 +468,7 @@ impl Drop for Monitors {
 
 /// Time since boot, sleep included. `Instant` on macOS stops while the
 /// machine sleeps, so after a sleep old wake-ups would look recent.
-fn since_boot() -> Duration {
+pub(crate) fn since_boot() -> Duration {
     #[cfg(target_os = "macos")]
     let clock = libc::CLOCK_MONOTONIC;
     #[cfg(not(target_os = "macos"))]

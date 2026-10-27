@@ -204,6 +204,9 @@ pub struct App {
     session_tx: mpsc::UnboundedSender<SessionCmd>,
     #[cfg(feature = "crosstalk")]
     crosstalk: Option<Arc<Crosstalk>>,
+    /// How many crosstalk messages may still wake the model.
+    #[cfg(feature = "crosstalk")]
+    crosstalk_budget: crosstalk::Budget,
 }
 
 impl App {
@@ -259,6 +262,8 @@ impl App {
             session_tx,
             #[cfg(feature = "crosstalk")]
             crosstalk: None,
+            #[cfg(feature = "crosstalk")]
+            crosstalk_budget: crosstalk::Budget::default(),
         }
     }
 
@@ -767,11 +772,22 @@ impl App {
             )));
         }
 
-        if others.is_empty() {
+        // Each message costs a turn, and the peer chooses how many it sends.
+        let admitted = self.crosstalk_budget.admit_now(others.len());
+        if admitted < others.len() {
+            self.messages.push(DisplayMessage::Info(format!(
+                "{} crosstalk messages dropped: the limit is {} a minute and {} a session.",
+                others.len() - admitted,
+                crosstalk::MAX_PER_MINUTE,
+                crosstalk::MAX_PER_SESSION
+            )));
+        }
+
+        if admitted == 0 {
             return;
         }
 
-        self.deliver_notice(crosstalk::notice(&others));
+        self.deliver_notice(crosstalk::notice(&others[..admitted]));
     }
 
     /// Hand a notice to the model: now if idle, after the turn if busy.
@@ -1415,6 +1431,25 @@ mod tests {
 
         app.handle_ui_event(monitor_event_from(1));
         assert_eq!(sent(&mut rx).len(), 1);
+    }
+
+    #[cfg(feature = "crosstalk")]
+    #[test]
+    fn crosstalk_messages_over_the_limit_are_dropped_and_shown() {
+        let (mut app, mut rx) = busy_app();
+        app.handle_ui_event(done());
+        sent(&mut rx);
+
+        let peer = "crosstalk_7Xm2qB9vKcWzR4tY8nPfL3sHdJ6gA1eUoVbC5iNkQxZ";
+        let raw: Vec<String> = (0..12)
+            .map(|i| format!("[message] from {peer} via hub (Bob)\nmessage {i}"))
+            .collect();
+        app.handle_ui_event(UiEvent::Crosstalk(raw.join("\n\n")));
+
+        let sent = sent(&mut rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].matches("Crosstalk | Message").count(), crosstalk::MAX_PER_MINUTE);
+        assert!(app.messages.iter().any(|m| matches!(m, DisplayMessage::Info(text) if text.starts_with("2 crosstalk messages dropped"))));
     }
 
     #[test]
