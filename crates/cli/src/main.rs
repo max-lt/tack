@@ -215,8 +215,8 @@ async fn main() -> Result<()> {
         (None, None) => history::new_id(),
     };
 
-    // Held until exit: a second ccrs on this id would erase our turns.
-    let _lock = history::lock(&id)?;
+    // A second ccrs on this id would erase our turns.
+    let lock = history::lock(&id)?;
 
     let mut builder = SessionBuilder::new(access_token, is_oauth).id(id.clone());
 
@@ -248,6 +248,8 @@ async fn main() -> Result<()> {
     }
 
     let mut session = builder.permissions(perms)?;
+
+    session.hold_lock(lock);
 
     let mut restored = Vec::new();
 

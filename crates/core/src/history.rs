@@ -109,15 +109,25 @@ pub fn find(id: &str) -> Result<Option<StoredSession>> {
 /// open it, or else the last one to save would erase the turns of the
 /// other.
 pub struct SessionLock {
+    dir: PathBuf,
     #[cfg(unix)]
     _file: fs::File,
+}
+
+impl SessionLock {
+    /// Lock `id` in the same directory, then release the old id. On an
+    /// error, the old lock is kept.
+    pub fn relock(&mut self, id: &str) -> Result<()> {
+        *self = lock_in(&self.dir, id)?;
+        Ok(())
+    }
 }
 
 pub fn lock(id: &str) -> Result<SessionLock> {
     lock_in(&sessions_dir()?, id)
 }
 
-fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
+pub(crate) fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
     let path = session_path(dir, id)?.with_extension("lock");
 
     #[cfg(unix)]
@@ -143,13 +153,18 @@ fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
             return Err(error).context("Failed to lock the session");
         }
 
-        Ok(SessionLock { _file: file })
+        Ok(SessionLock {
+            dir: dir.to_path_buf(),
+            _file: file,
+        })
     }
 
     #[cfg(not(unix))]
     {
         let _ = path;
-        Ok(SessionLock {})
+        Ok(SessionLock {
+            dir: dir.to_path_buf(),
+        })
     }
 }
 
@@ -577,6 +592,18 @@ mod tests {
         let err = format!("{:#}", load_from(tmp.path(), "big").unwrap_err());
         assert!(err.contains("Failed to read session big: the file is too large"), "{err}");
         assert_eq!(list_in(tmp.path(), Path::new("/p")).unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relock_moves_the_lock_to_the_new_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut lock = lock_in(tmp.path(), "old").unwrap();
+
+        lock.relock("new").unwrap();
+
+        assert!(lock_in(tmp.path(), "new").is_err());
+        lock_in(tmp.path(), "old").unwrap();
     }
 
     #[cfg(unix)]

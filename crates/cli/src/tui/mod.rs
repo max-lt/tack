@@ -981,7 +981,9 @@ async fn session_loop(
             }
 
             SessionCmd::Clear => {
-                session.clear();
+                if let Err(e) = session.clear() {
+                    let _ = ui_tx.send(UiEvent::Error(format!("{e:#}")));
+                }
 
                 // The fresh session has no file yet: nothing to hint at.
                 if let Ok(mut slot) = last_saved.lock() {

@@ -54,6 +54,8 @@ pub struct Session<P: PermissionHandler> {
     saved_monitors: Vec<crate::store::MonitorEntry>,
     /// What a resume lost, told to the model with the next message.
     resume_note: Option<String>,
+    /// Keeps other ccrs processes off this session id.
+    lock: Option<history::SessionLock>,
 }
 
 pub struct SessionBuilder {
@@ -248,6 +250,7 @@ impl SessionBuilder {
             #[cfg(not(target_arch = "wasm32"))]
             saved_monitors: Vec::new(),
             resume_note: None,
+            lock: None,
         })
     }
 
@@ -269,12 +272,26 @@ impl<P: PermissionHandler> Session<P> {
         &self.messages
     }
 
-    pub fn clear(&mut self) {
+    /// Start a new conversation with a new id. With a lock, the new id is
+    /// locked and the old one released; an error means the new id is not
+    /// locked, and the conversation is cleared all the same.
+    pub fn clear(&mut self) -> Result<()> {
         self.messages.truncate(self.bootstrap_len);
         // The old conversation stays on disk and remains resumable.
         self.id = history::new_id();
         self.context_used = 0;
         self.resume_note = None;
+
+        match &mut self.lock {
+            Some(lock) => lock.relock(&self.id),
+            None => Ok(()),
+        }
+    }
+
+    /// Hold `lock` for as long as the session lives, and move it to the new
+    /// id on [`Session::clear`].
+    pub fn hold_lock(&mut self, lock: history::SessionLock) {
+        self.lock = Some(lock);
     }
 
     pub fn id(&self) -> &str {
@@ -833,11 +850,26 @@ mod tests {
         assert!(!marker.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn clear_locks_the_new_id_and_frees_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session();
+        let old = s.id().to_string();
+        s.hold_lock(history::lock_in(dir.path(), &old).unwrap());
+
+        s.clear().unwrap();
+
+        assert_ne!(s.id(), old);
+        assert!(history::lock_in(dir.path(), s.id()).is_err());
+        history::lock_in(dir.path(), &old).unwrap();
+    }
+
     #[test]
     fn clear_resets_the_context_size() {
         let mut s = session();
         s.restore(stored(Some(777)));
-        s.clear();
+        s.clear().unwrap();
         assert_eq!(s.context_used(), 0);
     }
 
