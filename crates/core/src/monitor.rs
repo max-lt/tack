@@ -145,7 +145,7 @@ impl Monitors {
             return Err(exiting());
         }
         let group = Group {
-            pgid,
+            pgid: Some(pgid),
             registry: self.registry,
         };
 
@@ -190,7 +190,9 @@ impl Monitors {
             // The sandbox stays up while the monitor runs. The group is
             // killed when this task ends, however it ends.
             let _lease = lease;
-            let _group = group;
+            let mut proc = Proc { group, child };
+            let mut exit = Box::pin(exited(pgid));
+            let mut leader_done = false;
             let batch = |lines, dropped, ended| MonitorEvent {
                 id,
                 description: description.clone(),
@@ -205,17 +207,31 @@ impl Monitors {
             let ended = 'run: loop {
                 let first = tokio::select! {
                     () = stop.cancelled() => break None,
+                    // The command ended. Kill what it left in its group, so
+                    // the pipes close; the lines already written still come.
+                    _ = &mut exit, if !leader_done => {
+                        leader_done = true;
+                        proc.group.kill();
+                        continue;
+                    }
                     line = lines.recv() => line,
                 };
 
-                // The command closed its output; it can still run, and a
-                // stop must still reach it.
+                // The output closed. The command can still run, and a stop
+                // must still reach it.
                 let Some(first) = first else {
-                    let status = tokio::select! {
-                        () = stop.cancelled() => break None,
-                        status = child.wait() => status,
-                    };
-                    break Some(match status {
+                    if !leader_done {
+                        tokio::select! {
+                            () = stop.cancelled() => break None,
+                            _ = &mut exit => {}
+                        }
+                    }
+
+                    // The leader is not reaped yet: its pid, and so the
+                    // group id, cannot have a new owner.
+                    proc.group.kill();
+
+                    break Some(match proc.child.wait().await {
                         Ok(status) => match status.code() {
                             Some(code) => format!("exited with code {code}"),
                             None => "killed by a signal".to_string(),
@@ -377,18 +393,63 @@ impl Registry {
     }
 }
 
-/// The process group of a monitor's command. Dropping it kills every
-/// process in the group.
+/// The process group of a monitor's command, until it is killed.
 struct Group {
-    pgid: u32,
+    pgid: Option<u32>,
     registry: &'static Registry,
 }
 
-impl Drop for Group {
-    fn drop(&mut self) {
-        self.registry.remove(self.pgid);
-        killpg(self.pgid);
+impl Group {
+    /// Kill every process in the group, once. Call it before the leader is
+    /// reaped, or else the group id can belong to a new process.
+    fn kill(&mut self) {
+        if let Some(pgid) = self.pgid.take() {
+            self.registry.remove(pgid);
+            killpg(pgid);
+        }
     }
+}
+
+/// A monitor's command. Dropping it kills the group before the child:
+/// tokio reaps a dropped child later, so the group id is still ours.
+struct Proc {
+    group: Group,
+    child: tokio::process::Child,
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        self.group.kill();
+    }
+}
+
+/// Wait until `pid` exits, without reaping it. The zombie keeps the pid
+/// until `Child::wait`.
+async fn exited(pid: u32) -> std::io::Result<()> {
+    let wait = tokio::task::spawn_blocking(move || {
+        let id = libc::id_t::from(pid);
+
+        loop {
+            // SAFETY: an all-zero siginfo_t is a valid value, and waitid
+            // only writes into it.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: plain integers and a pointer to a local value.
+            let done = unsafe {
+                libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT)
+            };
+
+            if done == 0 {
+                return Ok(());
+            }
+
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    });
+
+    wait.await.unwrap_or_else(|e| Err(std::io::Error::other(e)))
 }
 
 fn killpg(pgid: u32) {
@@ -940,6 +1001,32 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(monitors.stop(id));
         assert!(released_soon(&released).await, "the command still runs after stop");
+    }
+
+    #[tokio::test]
+    async fn exited_does_not_reap_the_leader() {
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let pid = child.id().unwrap();
+
+        exited(pid).await.unwrap();
+
+        // A zombie keeps its pid, so a group id equal to it stays taken.
+        // SAFETY: kill with signal 0 only checks that the pid exists.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0);
+        drop(child);
+    }
+
+    #[tokio::test]
+    async fn the_end_of_the_command_ends_the_monitor_and_its_group() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        // The child holds stdout open after bash exits.
+        start(&monitors, "sleep 300 & echo $!");
+
+        let events = until_end(&mut rx).await;
+        let pid = events[0].lines[0].clone();
+
+        assert_eq!(events.last().unwrap().ended.as_deref(), Some("exited with code 0"));
+        assert!(gone_soon(&pid).await, "child {pid} outlived the monitor");
     }
 
     #[test]
