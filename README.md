@@ -194,7 +194,7 @@ Output:
 - The model gets the output as quoted data, not as an instruction.
 - Bytes that are not UTF-8 become U+FFFD.
 - Control characters, except tab, become `\xNN` text. An escape code in a log does not change the terminal.
-- Invisible characters become `\u{N}` text: format characters (Unicode category Cf, such as bidi controls and zero-width characters), the line and paragraph separators, and the tag block U+E0000 to U+E007F. A log line cannot hide text from the user that the model reads.
+- Invisible characters become `\u{N}` text: every Default_Ignorable_Code_Point and format character (Unicode 16; bidi controls, zero-width characters, variation selectors, the tag block), the line and paragraph separators, and the blank glyphs U+2800, U+3164, U+FFA0, U+115F and U+1160. A log line cannot hide text from the user that the model reads. An emoji with a variation selector, such as U+2764 U+FE0F, shows the selector as `\u{fe0f}`.
 
 Permissions and resume:
 

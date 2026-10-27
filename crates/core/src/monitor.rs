@@ -451,30 +451,38 @@ impl Drop for Monitors {
     }
 }
 
-/// The format characters (Unicode general category Cf, Unicode 16), the
-/// line and paragraph separators, and the tag block. A terminal does not
-/// show them, but the model reads them: a log line can hide text in them.
+/// Characters that a terminal does not show but the model reads: a log
+/// line can hide text in them. The set is Default_Ignorable_Code_Point and
+/// the format characters (category Cf), from Unicode 16, plus the line and
+/// paragraph separators and the blank glyphs U+2800, U+3164, U+FFA0,
+/// U+115F and U+1160. Ranges are sorted and do not overlap.
 const INVISIBLE: &[(u32, u32)] = &[
     (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
     (0x0600, 0x0605),
     (0x061C, 0x061C),
     (0x06DD, 0x06DD),
     (0x070F, 0x070F),
     (0x0890, 0x0891),
     (0x08E2, 0x08E2),
-    (0x180E, 0x180E),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
     (0x200B, 0x200F),
     (0x2028, 0x202E),
-    (0x2060, 0x2064),
-    (0x2066, 0x206F),
+    (0x2060, 0x206F),
+    (0x2800, 0x2800),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
     (0xFEFF, 0xFEFF),
-    (0xFFF9, 0xFFFB),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFB),
     (0x110BD, 0x110BD),
     (0x110CD, 0x110CD),
     (0x13430, 0x1343F),
     (0x1BCA0, 0x1BCA3),
     (0x1D173, 0x1D17A),
-    (0xE0000, 0xE007F),
+    (0xE0000, 0xE0FFF),
 ];
 
 /// Characters that act on a terminal or that a terminal does not show.
@@ -1666,6 +1674,22 @@ mod tests {
         }
         assert!(times.len() >= 2, "{times:?}");
         assert_eq!(lines.len(), 8, "a line was lost: {lines:?}");
+    }
+
+    #[test]
+    fn variation_selectors_and_blank_glyphs_are_shown() {
+        for hidden in [
+            '\u{fe00}', '\u{fe0f}', '\u{e0100}', '\u{e01ef}', '\u{180b}', '\u{180f}',
+            '\u{3164}', '\u{ffa0}', '\u{2800}', '\u{115f}', '\u{1160}', '\u{34f}',
+            '\u{17b4}', '\u{fff0}', '\u{e0fff}',
+        ] {
+            let text = escape(&format!("ok{hidden}"));
+            assert!(!text.contains(hidden), "U+{:04X} passed", u32::from(hidden));
+            assert!(text.starts_with("ok\\u{"), "{text}");
+        }
+
+        // Visible text with a combining accent and an emoji stays as is.
+        assert_eq!(escape("cafe\u{301} \u{1f600}"), "cafe\u{301} \u{1f600}");
     }
 
     #[test]
