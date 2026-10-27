@@ -111,7 +111,10 @@ impl Monitors {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
+            // Its own group, so a stop reaches the processes it starts.
+            .process_group(0)
             .spawn()?;
+        let group = child.id().map(Group);
 
         let id = id.unwrap_or_else(|| self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
         let entry = MonitorEntry {
@@ -151,8 +154,10 @@ impl Monitors {
         let lease = plan.lease;
 
         tokio::spawn(async move {
-            // The sandbox stays up while the monitor runs.
+            // The sandbox stays up while the monitor runs. The group is
+            // killed when this task ends, however it ends.
             let _lease = lease;
+            let _group = group;
             let batch = |lines, dropped, ended| MonitorEvent {
                 id,
                 description: description.clone(),
@@ -243,6 +248,20 @@ impl Drop for Monitors {
     fn drop(&mut self) {
         for running in self.running.lock().unwrap().values() {
             running.stop.cancel();
+        }
+    }
+}
+
+/// The process group of a monitor's command. Dropping it kills every
+/// process in the group.
+struct Group(u32);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Ok(pgid) = libc::pid_t::try_from(self.0) {
+            // SAFETY: killpg takes plain integers. The group is ours: the
+            // command was started as its leader.
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
         }
     }
 }
@@ -622,6 +641,36 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].len(), MAX_LINE + '…'.len_utf8());
         assert_eq!(lines[1], "next");
+    }
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    async fn gone_soon(pid: &str) -> bool {
+        for _ in 0..50 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn stop_kills_the_children_of_the_command_too() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        let id = start(&monitors, "sleep 300 & echo $!; wait");
+
+        let pid = next(&mut rx).await.lines.remove(0);
+        assert!(alive(&pid));
+
+        monitors.stop(id);
+        assert!(gone_soon(&pid).await, "child {pid} still runs");
     }
 
     #[test]
