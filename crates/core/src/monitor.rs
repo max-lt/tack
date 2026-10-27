@@ -295,7 +295,15 @@ fn finish(bytes: &[u8], clipped: bool) -> String {
         bytes = &bytes[..e.valid_up_to()];
     }
 
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    // Escape codes would act on the terminal that shows the notice.
+    let mut text = String::with_capacity(bytes.len());
+    for c in String::from_utf8_lossy(bytes).chars() {
+        if c.is_control() && c != '\t' {
+            text.push_str(&format!("\\x{:02x}", u32::from(c)));
+        } else {
+            text.push(c);
+        }
+    }
 
     if clipped {
         text.push('…');
@@ -593,6 +601,15 @@ mod tests {
 
         let lines: Vec<String> = until_end(&mut rx).await.into_iter().flat_map(|e| e.lines).collect();
         assert_eq!(lines, ["bad \u{FFFD} byte", "after"]);
+    }
+
+    #[tokio::test]
+    async fn control_bytes_are_shown_not_sent() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        start(&monitors, "printf 'a\\000b\\033[31mred\\033[0m\\ttab\\n'");
+
+        let line = until_end(&mut rx).await.remove(0).lines.remove(0);
+        assert_eq!(line, "a\\x00b\\x1b[31mred\\x1b[0m\ttab");
     }
 
     #[tokio::test]
