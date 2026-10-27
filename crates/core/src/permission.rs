@@ -239,6 +239,11 @@ fn pattern_matches(value: &str, pattern: &str) -> bool {
     }
 
     if let Some(prefix) = pattern.strip_suffix(":*") {
+        // An empty prefix would match each value that starts with a space.
+        if prefix.is_empty() {
+            return false;
+        }
+
         return value == prefix
             || value.starts_with(prefix)
                 && value
@@ -346,6 +351,49 @@ mod tests {
 
         let safe = Tool::Monitor { command: "tail -F log", description: "d", host: false };
         assert_eq!(c.check(&safe, p), Some(true));
+    }
+
+    #[test]
+    fn deny_wins_over_allow_in_any_order() {
+        let p = Path::new("/project");
+        let ls = Tool::Bash { command: "ls -la" };
+
+        for (allow, deny) in [(&["Bash(ls:*)", "Bash(*)"][..], &["Bash(ls:*)"][..]), (&["Bash(*)"][..], &["Bash(*)", "Bash(ls:*)"][..])] {
+            assert_eq!(config(allow, deny).check(&ls, p), Some(false));
+            let mut reversed = allow.to_vec();
+            reversed.reverse();
+            assert_eq!(config(&reversed, deny).check(&ls, p), Some(false));
+        }
+    }
+
+    #[test]
+    fn rules_that_do_not_parse_or_do_not_fit_match_nothing() {
+        let p = Path::new("/project");
+        let ls = Tool::Bash { command: "ls" };
+        let space = Tool::Bash { command: " ls" };
+
+        for rule in [
+            "Bash(:*)",     // empty prefix
+            " Bash(ls:*)",  // space before the name
+            "bash(ls:*)",   // names are case-sensitive
+            "Shell(ls:*)",  // unknown tool
+            "Bash(ls:*",    // no closing bracket
+            "Bash)ls:*(",   // brackets in the wrong order
+            "Bash(\"ls\")", // quotes are part of the pattern
+            "Bash()",       // matches only an empty command
+        ] {
+            let c = config(&[rule], &[]);
+            assert_eq!(c.check(&ls, p), None, "{rule:?} allowed ls");
+            assert_eq!(c.check(&space, p), None, "{rule:?} allowed \" ls\"");
+        }
+
+        // The wildcard alone allows every command, chained ones too.
+        let c = config(&["Bash(*)"], &[]);
+        assert_eq!(c.check(&Tool::Bash { command: "ls; rm x" }, p), Some(true));
+        // Spaces inside the pattern are part of it.
+        let c = config(&["Bash(git status:*)"], &[]);
+        assert_eq!(c.check(&Tool::Bash { command: "git status -s" }, p), Some(true));
+        assert_eq!(c.check(&Tool::Bash { command: "git statusx" }, p), None);
     }
 
     #[test]
