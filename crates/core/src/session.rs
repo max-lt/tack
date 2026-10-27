@@ -49,6 +49,9 @@ pub struct Session<P: PermissionHandler> {
     /// Taken once by whoever delivers monitor output to the model.
     #[cfg(not(target_arch = "wasm32"))]
     monitor_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::monitor::MonitorEvent>>,
+    /// Monitors of the restored session, not started yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    saved_monitors: Vec<crate::store::MonitorEntry>,
     /// What a resume lost, told to the model with the next message.
     resume_note: Option<String>,
 }
@@ -242,6 +245,8 @@ impl SessionBuilder {
             monitors,
             #[cfg(not(target_arch = "wasm32"))]
             monitor_events: Some(monitor_events),
+            #[cfg(not(target_arch = "wasm32"))]
+            saved_monitors: Vec::new(),
             resume_note: None,
         })
     }
@@ -312,6 +317,12 @@ impl<P: PermissionHandler> Session<P> {
         }
 
         self.resume_note = store.take_lost();
+
+        // The live store lists running monitors only; these start later.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.saved_monitors = std::mem::take(&mut store.monitors);
+        }
         *self.store.lock().unwrap() = store;
     }
 
@@ -330,7 +341,7 @@ impl<P: PermissionHandler> Session<P> {
     /// runs, so its commands are not trusted. A refused monitor is dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn restart_monitors(&mut self) -> Option<String> {
-        let saved = std::mem::take(&mut self.store.lock().unwrap().monitors);
+        let saved = std::mem::take(&mut self.saved_monitors);
 
         if saved.is_empty() {
             return None;
@@ -712,6 +723,26 @@ mod tests {
             .unwrap();
         assert_eq!((event.id, event.lines), (7, vec!["again".to_string()]));
         assert_eq!(s.restart_monitors().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_second_restart_does_not_start_running_monitors_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_in(dir.path(), AllowAll);
+        let mut saved = stored(Some(1));
+        saved.store.add_monitor(crate::store::MonitorEntry {
+            id: 3,
+            command: "sleep 30".to_string(),
+            description: "long".to_string(),
+            host: true,
+        });
+
+        s.restore(saved);
+        s.restart_monitors().await.unwrap();
+
+        assert_eq!(s.restart_monitors().await, None);
+        assert_eq!(s.monitors.list().len(), 1);
+        assert_eq!(s.store().monitors.len(), 1);
     }
 
     #[tokio::test]
