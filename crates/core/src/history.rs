@@ -21,6 +21,9 @@ const PREVIEW_CHARS: usize = 80;
 /// is format 1.
 const FORMAT_VERSION: u64 = 1;
 
+/// Most session files that `list` reads: the most recently changed ones.
+const MAX_LISTED: usize = 500;
+
 /// Largest session file that is read. Real sessions are well under 1 MiB.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -355,14 +358,30 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
 }
 
 fn list_in(dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
-    let mut sessions = Vec::new();
+    // Sort by the date of the file, which needs no read, and read only the
+    // newest: the time of a list does not grow with the directory.
+    let mut files = Vec::new();
 
     for entry in fs::read_dir(dir).context("Failed to read sessions directory")? {
-        let path = entry?.path();
+        let entry = entry?;
+        let path = entry.path();
 
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
+
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        files.push((modified, path));
+    }
+
+    files.sort_unstable_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    files.truncate(MAX_LISTED);
+
+    let mut sessions = Vec::new();
+
+    for (_, path) in files {
 
         // Unreadable or foreign files are skipped, not fatal.
         let Ok(contents) = read_capped(&path) else {
@@ -830,6 +849,41 @@ mod tests {
 
         assert!(write_private(&link, b"overwrite").is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    #[test]
+    fn list_reads_only_the_most_recent_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let start = SystemTime::now() - std::time::Duration::from_secs(100_000);
+        let total = MAX_LISTED as u64 + 50;
+
+        for i in 0..total {
+            let path = tmp.path().join(format!("{i}.json"));
+            // No save_in: its sync per file makes 550 files slow.
+            fs::write(&path, json_of(&stored(&i.to_string(), "/p", i, "x")).to_string()).unwrap();
+            let file = fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(start + std::time::Duration::from_secs(i)).unwrap();
+        }
+
+        let found = list_in(tmp.path(), Path::new("/p")).unwrap();
+
+        assert_eq!(found.len(), MAX_LISTED);
+        assert_eq!(found[0].id, (total - 1).to_string());
+        assert_eq!(found.last().unwrap().id, 50.to_string());
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_list_of_10000_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = "y".repeat(20_000);
+        for i in 0..10_000u64 {
+            save_in(tmp.path(), &stored(&i.to_string(), "/p", i, &body)).unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let found = list_in(tmp.path(), Path::new("/p")).unwrap();
+        eprintln!("listed {} in {:?}", found.len(), started.elapsed());
     }
 
     #[test]
