@@ -176,6 +176,11 @@ pub struct App {
     pub model_picker: Option<usize>,
     /// Messages typed while a turn is running, sent in order after it ends.
     pub queue: VecDeque<String>,
+    /// Notices for the model (monitor output, crosstalk messages) that
+    /// came during a turn. Not the user's text: a stop or an error does not
+    /// hand them back to the input. They go after the user's queue, once a
+    /// turn ends without an error.
+    notices: VecDeque<String>,
     /// Stop was pressed during the current turn. The queue is then handed
     /// back to the input instead of being sent.
     stopping: bool,
@@ -234,6 +239,7 @@ impl App {
             pending_perm: None,
             model_picker: None,
             queue: VecDeque::new(),
+            notices: VecDeque::new(),
             stopping: false,
             quit_requested: false,
             lm_models: Vec::new(),
@@ -755,7 +761,7 @@ impl App {
     /// Hand a notice to the model: now if idle, after the turn if busy.
     fn deliver_notice(&mut self, notice: String) {
         if self.state.is_busy() {
-            self.queue.push_back(notice);
+            self.notices.push_back(notice);
         } else {
             self.auto_scroll = true;
             self.submit_text(notice);
@@ -803,6 +809,13 @@ impl App {
             if self.model_picker.is_some() {
                 return;
             }
+        }
+
+        if self.state == AppState::Idle
+            && let Some(notice) = self.notices.pop_front()
+        {
+            self.auto_scroll = true;
+            self.submit_text(notice);
         }
     }
 
@@ -1281,12 +1294,55 @@ mod tests {
 
         app.handle_ui_event(monitor_event());
         assert!(sent(&mut rx).is_empty());
-        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.notices.len(), 1);
 
         app.handle_ui_event(done());
         let sent = sent(&mut rx);
         assert_eq!(sent.len(), 1);
         assert!(sent[0].starts_with("send:Monitor 1 | log\n> ERROR disk full"), "{sent:?}");
+    }
+
+    #[test]
+    fn monitor_output_during_a_permission_prompt_waits_for_the_turn() {
+        let (mut app, mut rx) = busy_app();
+        let (respond, _answer) = std_mpsc::sync_channel(1);
+        app.handle_ui_event(UiEvent::PermissionRequest {
+            description: "Run command: ls".to_string(),
+            respond,
+        });
+
+        app.handle_ui_event(monitor_event());
+        assert!(sent(&mut rx).is_empty());
+
+        app.handle_ui_event(done());
+        assert_eq!(sent(&mut rx).len(), 1);
+        app.handle_ui_event(done());
+        assert!(sent(&mut rx).is_empty(), "the notice was sent twice");
+    }
+
+    #[test]
+    fn monitor_output_survives_a_failed_turn_and_is_sent_once() {
+        for end in [UiEvent::Failed("overloaded".to_string()), UiEvent::Failed("Stopped.".to_string())] {
+            let (mut app, mut rx) = busy_app();
+
+            app.handle_ui_event(monitor_event());
+            app.handle_ui_event(end);
+
+            // The notice is not the user's text: it stays out of the input.
+            assert!(!app.input.contains("Monitor 1"), "input: {:?}", app.input);
+            assert!(sent(&mut rx).is_empty());
+
+            // The next turn of the user runs, then the notice, once.
+            app.input = "hi".to_string();
+            app.submit_input();
+            assert_eq!(sent(&mut rx), ["send:hi"]);
+            app.handle_ui_event(done());
+            let after = sent(&mut rx);
+            assert_eq!(after.len(), 1, "{after:?}");
+            assert!(after[0].starts_with("send:Monitor 1 | log"));
+            app.handle_ui_event(done());
+            assert!(sent(&mut rx).is_empty(), "the notice was sent twice");
+        }
     }
 
     #[test]
