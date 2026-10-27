@@ -133,7 +133,7 @@ Create `.claude/settings.local.json` in your project:
 **Auto-approved tools:**
 - `Glob`, `Grep`, `Search`, `List` — always allowed
 - `TerminalRead`, `TerminalClose`, `MonitorList`, `MonitorStop`, `CrosstalkWhoami`, `CrosstalkPeers` — always allowed
-- `Read`, `Write`, `Edit` — auto-allowed in project directory
+- `Read`, `Write`, `Edit` — auto-allowed in project directory. The check resolves `..` and symbolic links first, so a path that leads out of the project asks. Known limit: a link that changes between the check and the write is not covered.
 - `Git status`, `Git log`, `Git diff`, `Git show`, `Git blame`, `Git branch` — read-only git commands
 
 **Require permission:**
@@ -221,6 +221,7 @@ Known limits:
 
 - Format version 2. `ccrs` reads versions 1 and 2. It refuses a file with a higher version, so that a save cannot erase fields it does not know. A `ccrs` that reads only version 1 refuses a version 2 file.
 - Version 2 adds the highest terminal and monitor ids ever used, so that a new terminal or monitor does not take the id of one that the history names.
+- The version changes only for a field whose loss can cause harm, such as a reused id or a dropped safety limit. An optional field whose loss changes only timing, such as `debounce_seconds` of a monitor, keeps the version: an older `ccrs` loads the file and drops the field at its next save.
 - The directories have mode 0700 and the files mode 0600. A directory that belongs to another user is refused.
 - One `ccrs` process at a time opens a session: it holds a lock on `sessions/<id>.lock`. A second one stops with an error. `/clear` moves the lock to the new id.
 - `ccrs` does not read a file over 64 MiB, and it does not follow a symbolic link. A save replaces a link with a file and does not write to its target.
