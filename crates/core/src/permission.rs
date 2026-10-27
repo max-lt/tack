@@ -118,12 +118,23 @@ impl PermissionConfig {
             return Some(false);
         }
 
-        // Monitor and TerminalOpen run their command with bash, so a Bash
-        // deny rule covers that command too.
-        if let Tool::Monitor { command, .. } | Tool::TerminalOpen { command, .. } = tool {
-            let bash = Tool::Bash { command };
-            if self.deny.iter().any(|r| rule_matches(r, &bash)) {
-                return Some(false);
+        // Bash, Monitor and TerminalOpen run their command with bash. A
+        // deny rule of the tool, or of Bash, covers each command of a chain.
+        if let Tool::Bash { command }
+        | Tool::Monitor { command, .. }
+        | Tool::TerminalOpen { command, .. } = tool
+        {
+            for part in commands_in(command) {
+                let bash = Tool::Bash { command: part };
+                let same = with_command(tool, part);
+
+                if self
+                    .deny
+                    .iter()
+                    .any(|r| rule_matches(r, &bash) || rule_matches(r, &same))
+                {
+                    return Some(false);
+                }
             }
         }
 
@@ -197,6 +208,51 @@ impl PermissionConfig {
 /// a file: `;`, `&`, `|`, `$(...)`, backquotes, subshells, redirects and
 /// newlines.
 const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r'];
+
+/// The commands in a bash command line: the parts between `;`, `&`, `|`,
+/// newlines, backquotes and brackets (so `$(...)` too), without the
+/// variable assignments in front, as in `FOO=1 rm x`. It does not parse
+/// quotes: it finds more parts than bash, never fewer, which suits deny
+/// rules.
+fn commands_in(line: &str) -> Vec<&str> {
+    line.split([';', '&', '|', '\n', '\r', '`', '(', ')'])
+        .map(|part| {
+            let mut rest = part.trim_start();
+
+            while let Some((word, after)) = rest.split_once(char::is_whitespace)
+                && is_assignment(word)
+            {
+                rest = after.trim_start();
+            }
+
+            rest.trim_end()
+        })
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// `NAME=value`, a variable assignment before a command.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `tool` with `command` in the place of its own command.
+fn with_command<'a>(tool: &Tool<'a>, command: &'a str) -> Tool<'a> {
+    match *tool {
+        Tool::Monitor {
+            description, host, ..
+        } => Tool::Monitor {
+            command,
+            description,
+            host,
+        },
+        Tool::TerminalOpen { host, .. } => Tool::TerminalOpen { command, host },
+        _ => Tool::Bash { command },
+    }
+}
 
 /// `rule_matches` for an allow rule. A prefix rule such as `Bash(tail:*)`
 /// names one command; it does not cover a command with a shell
@@ -410,6 +466,27 @@ mod tests {
                 assert_eq!(c.check(tool, p), None, "{command:?} was allowed");
             }
         }
+    }
+
+    #[test]
+    fn a_bash_deny_rule_finds_the_command_inside_a_chain() {
+        let c = config(&["Bash(*)", "Monitor(*)", "TerminalOpen(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+
+        for command in CHAINED.iter().filter(|c| c.contains("rm")) {
+            let tools = [
+                Tool::Bash { command },
+                Tool::Monitor { command, description: "d", host: false },
+                Tool::TerminalOpen { command, host: false },
+            ];
+            for tool in &tools {
+                assert_eq!(c.check(tool, p), Some(false), "{command:?} was not denied");
+            }
+        }
+
+        // Variable assignments before the command do not hide it.
+        assert_eq!(c.check(&Tool::Bash { command: "FOO=1 rm -rf x" }, p), Some(false));
+        assert_eq!(c.check(&Tool::Bash { command: "ls; FOO=1 BAR=2 rm x" }, p), Some(false));
     }
 
     #[test]

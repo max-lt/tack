@@ -140,7 +140,8 @@ Create `.claude/settings.local.json` in your project:
 - `Bash` commands (unless explicitly allowed)
 - `TerminalOpen`, `TerminalSend`, `Monitor` — rules: `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
 - A prefix rule such as `Bash(tail:*)` covers one command. It does not cover a command with a shell metacharacter (`;`, `&`, `|`, `$`, a backquote, `(`, `)`, `<`, `>` or a newline), such as `tail x; rm -rf ~` or `tail $HOME/log`: `ccrs` asks. The same applies to `Monitor` and `TerminalOpen`. `Bash(*)` and a rule without `:*` match as written.
-- A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`.
+- A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`. A deny rule checks each command of a chain: `Bash(rm:*)` denies `ls; rm x`, `tail $(rm y)` and `FOO=1 rm x`.
+- A deny rule is a guard, not a sandbox. It matches the start of a command, so `sudo rm`, `/bin/rm`, `env rm`, `bash -c "rm x"`, `xargs rm` or `find -delete` do not match `Bash(rm:*)`. To contain commands, use `--sandbox`.
 - No allow rule covers `Monitor` or `TerminalOpen` with `host: true`. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
 - `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
 - `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
