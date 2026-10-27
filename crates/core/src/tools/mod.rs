@@ -275,7 +275,11 @@ pub fn to_permission_tool<'a>(
         }
         "TerminalSend" => {
             let keys = input.get("input").and_then(|c| c.as_str()).unwrap_or("");
-            Some(permission::Tool::TerminalSend { input: keys })
+            // The session knows where the terminal runs and sets `host`.
+            Some(permission::Tool::TerminalSend {
+                input: keys,
+                host: true,
+            })
         }
         "TerminalRead" | "TerminalClose" => Some(permission::Tool::TerminalWatch),
         "Monitor" => {

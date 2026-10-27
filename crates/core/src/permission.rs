@@ -22,7 +22,9 @@ pub enum Tool<'a> {
     /// sandbox.
     TerminalOpen { command: &'a str, host: bool },
     /// Type into an open terminal: it can run anything the terminal runs.
-    TerminalSend { input: &'a str },
+    /// `host`: the terminal runs on the user's machine. Unknown terminals
+    /// count as on the host.
+    TerminalSend { input: &'a str, host: bool },
     /// Read or close an open terminal.
     TerminalWatch,
     /// Start a background command whose output wakes the model. `host`
@@ -140,10 +142,13 @@ impl PermissionConfig {
 
         // Text typed into a terminal runs as shell lines. A key token, such
         // as <Tab> or <C-m>, can start or change a line: split there too.
-        if let Tool::TerminalSend { input } = tool {
+        if let Tool::TerminalSend { input, host } = tool {
             for part in typed_parts(input).into_iter().flat_map(commands_in) {
                 let bash = Tool::Bash { command: part };
-                let typed = Tool::TerminalSend { input: part };
+                let typed = Tool::TerminalSend {
+                    input: part,
+                    host: *host,
+                };
 
                 if self
                     .deny
@@ -154,7 +159,9 @@ impl PermissionConfig {
                 }
             }
 
-            if self.typed_lines_allowed(input) {
+            // Text typed into a host terminal runs on the host: no allow
+            // rule covers it, as for TerminalOpen with host true.
+            if !host && self.typed_lines_allowed(input) {
                 return Some(true);
             }
         }
@@ -175,7 +182,9 @@ impl PermissionConfig {
         // sandbox, so no allow rule covers it: the user is asked.
         let on_host = matches!(
             tool,
-            Tool::Monitor { host: true, .. } | Tool::TerminalOpen { host: true, .. }
+            Tool::Monitor { host: true, .. }
+                | Tool::TerminalOpen { host: true, .. }
+                | Tool::TerminalSend { host: true, .. }
         );
 
         // Check explicit allow rules
@@ -313,7 +322,11 @@ impl PermissionConfig {
             && lines.iter().all(|line| {
                 !line.contains(SHELL_METACHARACTERS)
                     && self.allow.iter().any(|rule| {
-                        is_prefix_rule(rule) && rule_matches(rule, &Tool::TerminalSend { input: line })
+                        let typed = Tool::TerminalSend {
+                            input: line,
+                            host: false,
+                        };
+                        is_prefix_rule(rule) && rule_matches(rule, &typed)
                     })
             })
     }
@@ -357,7 +370,7 @@ fn rule_matches(rule: &str, tool: &Tool<'_>) -> bool {
         ("Edit", Tool::Edit { path }) => pattern_matches(&path.display().to_string(), pattern),
         ("Git", Tool::Git { subcommand }) => pattern_matches(subcommand, pattern),
         ("TerminalOpen", Tool::TerminalOpen { command, .. }) => pattern_matches(command, pattern),
-        ("TerminalSend", Tool::TerminalSend { input }) => pattern_matches(input, pattern),
+        ("TerminalSend", Tool::TerminalSend { input, .. }) => pattern_matches(input, pattern),
         ("Monitor", Tool::Monitor { command, .. }) => pattern_matches(command, pattern),
         ("Crosstalk", Tool::Crosstalk { action, peer, .. }) => {
             pattern_matches(&format!("{action} {peer}"), pattern)
@@ -563,7 +576,7 @@ mod tests {
     fn a_prefix_allow_rule_checks_each_line_typed_into_a_terminal() {
         let c = config(&["TerminalSend(ls:*)"], &[]);
         let p = Path::new("/project");
-        let send = |input| c.check(&Tool::TerminalSend { input }, p);
+        let send = |input| c.check(&Tool::TerminalSend { input, host: false }, p);
 
         assert_eq!(send("ls -la<Enter>"), Some(true));
         assert_eq!(send("ls<Enter>ls -a<Enter>"), Some(true));
@@ -585,14 +598,25 @@ mod tests {
 
         // The wildcard allows any input; an exact rule matches as written.
         let all = config(&["TerminalSend(*)"], &[]);
-        assert_eq!(all.check(&Tool::TerminalSend { input: "ls<Up><Enter>" }, p), Some(true));
+        assert_eq!(all.check(&Tool::TerminalSend { input: "ls<Up><Enter>", host: false }, p), Some(true));
+    }
+
+    #[test]
+    fn an_allow_rule_never_covers_text_typed_into_a_host_terminal() {
+        let c = config(&["TerminalSend(ls:*)", "TerminalSend(*)"], &["Bash(rm:*)"]);
+        let p = Path::new("/project");
+        let send = |input, host| c.check(&Tool::TerminalSend { input, host }, p);
+
+        assert_eq!(send("ls<Enter>", false), Some(true));
+        assert_eq!(send("ls<Enter>", true), None);
+        assert_eq!(send("rm x<Enter>", true), Some(false));
     }
 
     #[test]
     fn a_deny_rule_checks_each_line_typed_into_a_terminal() {
         let c = config(&["TerminalSend(*)"], &["Bash(rm:*)"]);
         let p = Path::new("/project");
-        let send = |input| c.check(&Tool::TerminalSend { input }, p);
+        let send = |input| c.check(&Tool::TerminalSend { input, host: false }, p);
 
         for input in [
             "rm -rf ~<Enter>",

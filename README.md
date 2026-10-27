@@ -143,7 +143,7 @@ Create `.claude/settings.local.json` in your project:
 - `TerminalSend` text runs as shell lines. A prefix rule such as `TerminalSend(ls:*)` checks each line between `<Enter>` keys and line breaks, like a `Bash` command. Another key token, such as `<Up>`, `<Tab>`, `<C-m>` or an unknown one, makes `ccrs` ask: the shell can then run a line that is not the text. A deny rule checks each part between key tokens and line breaks, against `TerminalSend` and `Bash` rules.
 - A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`. A deny rule checks each command of a chain: `Bash(rm:*)` denies `ls; rm x`, `tail $(rm y)` and `FOO=1 rm x`.
 - A deny rule is a guard, not a sandbox. It matches the start of a command, so `sudo rm`, `/bin/rm`, `env rm`, `bash -c "rm x"`, `xargs rm` or `find -delete` do not match `Bash(rm:*)`. To contain commands, use `--sandbox`.
-- No allow rule covers `Monitor` or `TerminalOpen` with `host: true`. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
+- No allow rule covers `Monitor` or `TerminalOpen` with `host: true`, or `TerminalSend` into a terminal that runs on the host. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
 - `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
 - `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
 

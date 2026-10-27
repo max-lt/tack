@@ -171,7 +171,10 @@ fn describe(tool: &Tool<'_>) -> String {
                 escape(description)
             )
         }
-        Tool::TerminalSend { input } => format!("Type into a terminal: {input}"),
+        Tool::TerminalSend { input, host } => {
+            let place = if *host { " ON THIS MACHINE" } else { "" };
+            format!("Type into a terminal{place}: {input}")
+        }
         Tool::Crosstalk { action, peer, text } => match *action {
             "send" => format!("Crosstalk: send to {peer}:\n  {text}"),
             "connect" => format!("Crosstalk: ask {peer} to pair, as \"{text}\""),

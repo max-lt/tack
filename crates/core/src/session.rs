@@ -467,6 +467,27 @@ impl<P: PermissionHandler> Session<P> {
         store
     }
 
+    /// The permission request for a tool call. For TerminalSend, `host`
+    /// comes from the store: the input names only the terminal id.
+    pub fn permission_tool<'a>(&self, name: &str, input: &'a serde_json::Value) -> Option<Tool<'a>> {
+        match tools::to_permission_tool(name, input)? {
+            Tool::TerminalSend { input: keys, .. } => {
+                let id = input.get("id").and_then(serde_json::Value::as_u64);
+                let host = self
+                    .store
+                    .lock()
+                    .unwrap()
+                    .terminals
+                    .iter()
+                    .find(|t| Some(u64::from(t.id)) == id)
+                    .is_none_or(|t| t.host);
+
+                Some(Tool::TerminalSend { input: keys, host })
+            }
+            tool => Some(tool),
+        }
+    }
+
     /// What the session has set up, as it would be saved.
     pub fn store(&self) -> Store {
         self.store.lock().unwrap().clone()
@@ -627,7 +648,7 @@ impl<P: PermissionHandler> Session<P> {
             handler.on_tool_use_start(name, id, input);
 
             // Permission check
-            let perm_tool = tools::to_permission_tool(name, input);
+            let perm_tool = self.permission_tool(name, input);
             let allowed = match &perm_tool {
                 Some(tool) => self.permissions.allow(tool),
                 None => false,
@@ -1103,6 +1124,32 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(gone, "monitor command {pid} outlived /clear");
+    }
+
+    #[test]
+    fn text_for_a_host_terminal_is_checked_as_a_run_on_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session_in(dir.path(), AllowAll);
+        for (id, host) in [(1, true), (2, false)] {
+            s.store.lock().unwrap().add_terminal(crate::store::TerminalEntry {
+                id,
+                command: String::new(),
+                host,
+            });
+        }
+
+        let host_of = |id: u32| {
+            let input = serde_json::json!({ "id": id, "input": "ls<Enter>" });
+            match s.permission_tool("TerminalSend", &input) {
+                Some(Tool::TerminalSend { host, .. }) => host,
+                _ => panic!("no TerminalSend permission"),
+            }
+        };
+
+        assert!(host_of(1));
+        assert!(!host_of(2));
+        // An unknown terminal is treated as one on the host.
+        assert!(host_of(9));
     }
 
     #[test]
