@@ -1508,7 +1508,7 @@ mod tests {
                 Path::new("/"),
                 Spec {
                     command: "sleep 30",
-                    description: description,
+                    description,
                     place: Place::Sandbox,
                     id: None,
                 },
