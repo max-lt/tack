@@ -1,10 +1,28 @@
 use std::fmt::Write;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use super::{ToolDef, ToolOutput};
-use crate::monitor::Monitors;
+use crate::monitor::{
+    MAX_EVENTS_PER_MINUTE, MAX_MONITORS, MAX_SESSION_EVENTS_PER_MINUTE, Monitors,
+};
 use crate::sandbox::{Sandbox, host_terminal};
+
+/// Built from the limits, so the text cannot disagree with them.
+static DESCRIPTION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Start a background command and get woken by its output: each line it prints \
+         (stdout or stderr) reaches you as a \"Monitor\" message, with lines that come close \
+         together batched. Filter in the command so only lines worth a wake-up come out, \
+         e.g. `tail -F app.log | grep --line-buffered ERROR`. It runs where Bash runs; set \
+         host to run on the user's machine. It keeps running across turns and is started \
+         again when the session is resumed. Stop it with MonitorStop. A stop kills the \
+         process group of the command; a process that leaves the group (setsid, a \
+         daemon) keeps running. Limits: {MAX_MONITORS} monitors at a time; a monitor stops \
+         after {MAX_EVENTS_PER_MINUTE} events in one minute, and all monitors together after \
+         {MAX_SESSION_EVENTS_PER_MINUTE}."
+    )
+});
 
 pub struct MonitorTool {
     monitors: Arc<Monitors>,
@@ -42,14 +60,7 @@ impl ToolDef for MonitorTool {
     }
 
     fn description(&self) -> &'static str {
-        "Start a background command and get woken by its output: each line it prints \
-         (stdout or stderr) reaches you as a \"Monitor\" message, with lines that come close \
-         together batched. Filter in the command so only lines worth a wake-up come out, \
-         e.g. `tail -F app.log | grep --line-buffered ERROR`. It runs where Bash runs; set \
-         host to run on the user's machine. It keeps running across turns and is started \
-         again when the session is resumed. Stop it with MonitorStop. A stop kills the \
-         process group of the command; a process that leaves the group (setsid, a \
-         daemon) keeps running."
+        &DESCRIPTION
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -217,6 +228,15 @@ mod tests {
         stop.execute(&serde_json::json!({ "id": 2 }), Path::new("/")).await;
         let out = list.execute(&serde_json::json!({}), Path::new("/")).await.content;
         assert_eq!(out, "No monitor is running.");
+    }
+
+    #[test]
+    fn the_description_gives_the_limits() {
+        let (start, _, _) = tools();
+        let text = ToolDef::description(&start);
+
+        assert!(text.contains(&format!("{MAX_MONITORS} monitors at a time")), "{text}");
+        assert!(text.contains(&format!("after {MAX_EVENTS_PER_MINUTE} events")), "{text}");
     }
 
     #[tokio::test]
