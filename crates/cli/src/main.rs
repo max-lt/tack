@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
             _ = hup.recv() => 129,
         };
 
-        claude_code_core::monitor::kill_all();
+        claude_code_core::process_group::kill_all();
 
         // Without the TUI, stdout can be a pipe: write no escape codes.
         if tui::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {

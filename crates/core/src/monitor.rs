@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::process_group::{Group, REGISTRY, Registry, exited};
 use crate::sandbox::TerminalPlan;
 use crate::store::{MonitorEntry, SharedStore};
 
@@ -506,99 +507,8 @@ fn take_wake_up(window: &mut VecDeque<Duration>, now: Duration, max: usize) -> b
     true
 }
 
-/// The process groups of every monitor in this process.
-static REGISTRY: Registry = Registry::new();
-
-/// Kill the commands of every monitor in this process, and refuse new
-/// monitors after it. For a process that exits without unwinding, such
-/// as on SIGTERM: the monitors run in their own process groups, so a signal
-/// to this process does not reach them.
-pub fn kill_all() {
-    REGISTRY.kill_all();
-}
-
 fn exiting() -> std::io::Error {
     std::io::Error::other("ccrs is exiting; no monitor can start")
-}
-
-struct Registry {
-    state: Mutex<RegistryState>,
-    /// Tests: close the registry at the next `add`, as a kill_all that
-    /// runs between the spawn and the add.
-    #[cfg(test)]
-    close_at_add: std::sync::atomic::AtomicBool,
-}
-
-struct RegistryState {
-    groups: Vec<u32>,
-    /// Set by `kill_all`; no group is added after it.
-    closed: bool,
-}
-
-impl Registry {
-    const fn new() -> Self {
-        Self {
-            state: Mutex::new(RegistryState {
-                groups: Vec::new(),
-                closed: false,
-            }),
-            #[cfg(test)]
-            close_at_add: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    fn is_closed(&self) -> bool {
-        self.state.lock().unwrap().closed
-    }
-
-    /// Record a live group. After `kill_all`, kill it instead and return
-    /// `false`.
-    fn add(&self, pgid: u32) -> bool {
-        let mut state = self.state.lock().unwrap();
-
-        #[cfg(test)]
-        if self.close_at_add.load(Ordering::SeqCst) {
-            state.closed = true;
-        }
-
-        if state.closed {
-            killpg(pgid);
-            return false;
-        }
-
-        state.groups.push(pgid);
-        true
-    }
-
-    fn remove(&self, pgid: u32) {
-        self.state.lock().unwrap().groups.retain(|&g| g != pgid);
-    }
-
-    fn kill_all(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.closed = true;
-
-        for pgid in state.groups.drain(..) {
-            killpg(pgid);
-        }
-    }
-}
-
-/// The process group of a monitor's command, until it is killed.
-struct Group {
-    pgid: Option<u32>,
-    registry: &'static Registry,
-}
-
-impl Group {
-    /// Kill every process in the group, once. Call it before the leader is
-    /// reaped, or else the group id can belong to a new process.
-    fn kill(&mut self) {
-        if let Some(pgid) = self.pgid.take() {
-            self.registry.remove(pgid);
-            killpg(pgid);
-        }
-    }
 }
 
 /// A monitor's command. Dropping it kills the group before the child:
@@ -611,42 +521,6 @@ struct Proc {
 impl Drop for Proc {
     fn drop(&mut self) {
         self.group.kill();
-    }
-}
-
-/// Wait until `pid` exits, without reaping it. The zombie keeps the pid
-/// until `Child::wait`.
-async fn exited(pid: u32) -> std::io::Result<()> {
-    let wait = tokio::task::spawn_blocking(move || {
-        let id = libc::id_t::from(pid);
-
-        loop {
-            // SAFETY: an all-zero siginfo_t is a valid value, and waitid
-            // only writes into it.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: plain integers and a pointer to a local value.
-            let done =
-                unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
-
-            if done == 0 {
-                return Ok(());
-            }
-
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
-    });
-
-    wait.await.unwrap_or_else(|e| Err(std::io::Error::other(e)))
-}
-
-fn killpg(pgid: u32) {
-    if let Ok(pgid) = libc::pid_t::try_from(pgid) {
-        // SAFETY: killpg takes plain integers. The group is ours: the
-        // command was started as its leader.
-        unsafe { libc::killpg(pgid, libc::SIGKILL) };
     }
 }
 

@@ -169,6 +169,8 @@ Three layers, merged in order:
 
 The model gets the screen with control and invisible characters as `\xNN` and `\u{N}` text, as for monitor output.
 
+A close, the end of the session, SIGTERM and SIGHUP kill the process group of the terminal command, also a child that ignores SIGHUP. The limits of monitors apply: a process that leaves the group (`setsid`, a daemon) and SIGKILL on `ccrs` are not covered.
+
 ### Monitors
 
 The `Monitor` tool runs a command in the background. Each line that the command writes to stdout or stderr wakes the model. `MonitorList` lists the monitors. `MonitorStop` stops one.

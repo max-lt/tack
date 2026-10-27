@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::process_group::{Group, REGISTRY, Registry, has_exited};
 use crate::sandbox::TerminalPlan;
 
 /// Output is settled when nothing new arrived for this long.
@@ -32,13 +33,26 @@ pub const MAX_COLS: u16 = 500;
 /// Most bytes of screen text in one read, after the escape.
 pub const MAX_SCREEN_BYTES: usize = 32 * 1024;
 
-#[derive(Default)]
 pub struct Terminals {
     open: Mutex<HashMap<u32, Terminal>>,
     next_id: AtomicU32,
+    registry: &'static Registry,
+}
+
+impl Default for Terminals {
+    fn default() -> Self {
+        Self {
+            open: Mutex::default(),
+            next_id: AtomicU32::new(0),
+            registry: &REGISTRY,
+        }
+    }
 }
 
 struct Terminal {
+    /// The PTY makes the command a session leader: its pid is the id of its
+    /// process group.
+    group: Group,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output: Arc<Output>,
@@ -78,6 +92,10 @@ impl Terminals {
             ));
         }
 
+        if self.registry.is_closed() {
+            return Err(io::Error::other("ccrs is exiting; no terminal can open"));
+        }
+
         if self.open.lock().unwrap().len() >= MAX_TERMINALS {
             return Err(io::Error::other(format!(
                 "{MAX_TERMINALS} terminals are open; close one first"
@@ -98,7 +116,17 @@ impl Terminals {
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
 
-        let child = pty.slave.spawn_command(cmd).map_err(io::Error::other)?;
+        let mut child = pty.slave.spawn_command(cmd).map_err(io::Error::other)?;
+
+        let pid = child.process_id();
+        if !pid.is_some_and(|pid| self.registry.add(pid)) {
+            let _ = child.kill();
+            return Err(io::Error::other("ccrs is exiting; no terminal can open"));
+        }
+        let group = Group {
+            pgid: pid,
+            registry: self.registry,
+        };
         let mut reader = pty.master.try_clone_reader().map_err(io::Error::other)?;
         let writer = pty.master.take_writer().map_err(io::Error::other)?;
 
@@ -125,6 +153,7 @@ impl Terminals {
         self.open.lock().unwrap().insert(
             id,
             Terminal {
+                group,
                 child,
                 writer,
                 output,
@@ -219,11 +248,9 @@ impl Terminals {
 
         let snapshot = self.snapshot(id, &output)?;
 
-        let Some(mut terminal) = self.open.lock().unwrap().remove(&id) else {
+        if self.open.lock().unwrap().remove(&id).is_none() {
             return Err(unknown(id));
-        };
-
-        let _ = terminal.child.kill();
+        }
 
         Ok(snapshot)
     }
@@ -232,6 +259,13 @@ impl Terminals {
         let exit_code = {
             let mut open = self.open.lock().unwrap();
             let terminal = open.get_mut(&id).ok_or_else(|| unknown(id))?;
+
+            // Kill what the command left in its group before try_wait
+            // reaps the leader, while the group id is still ours.
+            if terminal.group.pgid.is_some_and(has_exited) {
+                terminal.group.kill();
+            }
+
             terminal.child.try_wait()?.map(|status| status.exit_code())
         };
 
@@ -244,11 +278,11 @@ impl Terminals {
     }
 }
 
-impl Drop for Terminals {
+impl Drop for Terminal {
+    /// Kill the group first: the child kill can reap the leader.
     fn drop(&mut self) {
-        for terminal in self.open.get_mut().unwrap().values_mut() {
-            let _ = terminal.child.kill();
-        }
+        self.group.kill();
+        let _ = self.child.kill();
     }
 }
 
@@ -424,6 +458,75 @@ mod tests {
         assert!(text.len() <= MAX_SCREEN_BYTES + 40, "{} bytes", text.len());
         assert!(text.starts_with('(') && text.contains("lines above not shown"));
         assert!(text.lines().last().unwrap().starts_with("199"));
+    }
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    async fn gone_soon(pid: &str) -> bool {
+        for _ in 0..50 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    /// Open a terminal whose child ignores SIGHUP, and return its pid.
+    async fn child_that_ignores_hangup(terminals: &Terminals, dir: &Path) -> (u32, String) {
+        let id = terminals
+            .open(host_terminal("trap '' HUP; sleep 300 & echo pid=$!; wait"), dir, 24, 80)
+            .unwrap();
+        let screen = terminals.read(id, Some("pid="), Duration::from_secs(5)).await.unwrap().screen;
+        let pid = screen.split("pid=").nth(1).unwrap().split_whitespace().next().unwrap().to_string();
+        assert!(alive(&pid));
+        (id, pid)
+    }
+
+    #[tokio::test]
+    async fn close_kills_the_children_of_the_command() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        let (id, pid) = child_that_ignores_hangup(&terminals, dir.path()).await;
+
+        terminals.close(id).unwrap();
+
+        assert!(gone_soon(&pid).await, "child {pid} outlived TerminalClose");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_terminals_kills_the_children_too() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        let (_, pid) = child_that_ignores_hangup(&terminals, dir.path()).await;
+
+        drop(terminals);
+
+        assert!(gone_soon(&pid).await, "child {pid} outlived the session");
+    }
+
+    #[tokio::test]
+    async fn kill_all_reaches_the_children_of_a_terminal() {
+        let registry: &'static Registry = Box::leak(Box::new(Registry::new()));
+        let terminals = Terminals {
+            registry,
+            ..Terminals::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (_, pid) = child_that_ignores_hangup(&terminals, dir.path()).await;
+
+        registry.kill_all();
+
+        assert!(gone_soon(&pid).await, "child {pid} outlived kill_all");
+        let err = terminals.open(host_terminal("true"), dir.path(), 24, 80).unwrap_err();
+        assert!(err.to_string().contains("exiting"), "{err}");
     }
 
     #[test]

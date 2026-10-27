@@ -17,6 +17,8 @@ pub mod lmstudio;
 pub mod monitor;
 pub mod openai;
 pub mod permission;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod process_group;
 pub mod provider;
 pub mod sandbox;
 pub mod session;
