@@ -37,12 +37,22 @@ impl Credentials {
 pub fn config_dir() -> Result<PathBuf> {
     let base = dirs::config_dir().context("Could not determine config directory")?;
     let dir = base.join("claude-code-rs");
+    make_private(&dir).context("Failed to create config directory")?;
+    Ok(dir)
+}
 
-    if !dir.exists() {
-        fs::create_dir_all(&dir).context("Failed to create config directory")?;
+/// Create `dir` if it does not exist, and give it to the owner only: it
+/// holds credentials and conversations.
+pub(crate) fn make_private(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
-    Ok(dir)
+    Ok(())
 }
 
 fn credentials_path() -> Result<PathBuf> {

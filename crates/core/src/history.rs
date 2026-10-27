@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::api::Message;
-use crate::config;
+use crate::config::{self, make_private};
 use crate::store::Store;
 
 const PREVIEW_CHARS: usize = 80;
@@ -62,7 +62,7 @@ pub fn new_id() -> String {
 
 pub fn sessions_dir() -> Result<PathBuf> {
     let dir = config::config_dir()?.join("sessions");
-    fs::create_dir_all(&dir).context("Failed to create sessions directory")?;
+    make_private(&dir).context("Failed to create sessions directory")?;
     Ok(dir)
 }
 
@@ -112,10 +112,26 @@ fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
     let contents = serde_json::to_string(session)?;
 
     // Write then rename, so a crash mid-write never corrupts a saved session.
-    fs::write(&tmp, contents).context("Failed to write session file")?;
+    write_private(&tmp, contents.as_bytes()).context("Failed to write session file")?;
     fs::rename(&tmp, &path).context("Failed to replace session file")?;
 
     Ok(())
+}
+
+/// Write a new file that only the owner can read.
+fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    options.open(path)?.write_all(contents)
 }
 
 fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
@@ -327,6 +343,30 @@ mod tests {
         }
 
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_files_and_their_directory_are_for_the_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sessions");
+        fs::create_dir(&dir).unwrap();
+        // A directory made before this rule.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        make_private(&dir).unwrap();
+        save_in(&dir, &stored("1", "/p", 1, "secret")).unwrap();
+
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("1.json")), 0o600);
     }
 
     #[test]
