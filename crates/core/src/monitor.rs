@@ -169,7 +169,7 @@ impl Monitors {
                 ended,
             };
 
-            let ended = loop {
+            let ended = 'run: loop {
                 let first = tokio::select! {
                     () = stop.cancelled() => break None,
                     line = lines.recv() => line,
@@ -188,11 +188,16 @@ impl Monitors {
                 let mut collected = vec![clip(first)];
                 let mut dropped = 0;
 
-                // Collect what follows within the window into one event.
+                // Collect what follows within the window into one event. A
+                // stop ends the monitor at once; the open batch is dropped.
                 let deadline = tokio::time::Instant::now() + MAX_BATCH;
                 loop {
                     let wait = BATCH_WINDOW.min(deadline - tokio::time::Instant::now());
-                    let Ok(Some(line)) = tokio::time::timeout(wait, lines.recv()).await else {
+                    let line = tokio::select! {
+                        () = stop.cancelled() => break 'run None,
+                        line = tokio::time::timeout(wait, lines.recv()) => line,
+                    };
+                    let Ok(Some(line)) = line else {
                         break;
                     };
 
@@ -473,6 +478,29 @@ mod tests {
 
         monitors.stop(id);
         assert!(released_soon(&released).await);
+    }
+
+    #[tokio::test]
+    async fn stop_during_a_busy_stream_releases_the_lease_at_once() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        let cmd = "while true; do echo tick; sleep 0.05; done";
+        let (plan, released) = leased(cmd);
+        let id = monitors
+            .start(plan, Path::new("/"), cmd, "x", false, None)
+            .unwrap();
+
+        // Wait for the first event, then stop while the next batch is open.
+        next(&mut rx).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        monitors.stop(id);
+
+        let started = tokio::time::Instant::now();
+        assert!(released_soon(&released).await);
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+
+        // The batch that was open when it stopped is not sent.
+        tokio::time::sleep(MAX_BATCH).await;
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
