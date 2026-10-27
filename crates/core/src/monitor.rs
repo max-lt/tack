@@ -359,21 +359,53 @@ impl Drop for Monitors {
     }
 }
 
+/// The format characters (Unicode general category Cf, Unicode 16), the
+/// line and paragraph separators, and the tag block. A terminal does not
+/// show them, but the model reads them: a log line can hide text in them.
+const INVISIBLE: &[(u32, u32)] = &[
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE007F),
+];
+
 /// Characters that act on a terminal or that a terminal does not show.
 fn is_hidden(c: char) -> bool {
-    c.is_control() && c != '\t'
+    let code = u32::from(c);
+    (c.is_control() && c != '\t')
+        || INVISIBLE
+            .iter()
+            .any(|&(first, last)| (first..=last).contains(&code))
 }
 
-/// `text` with each hidden character as `\xNN` text. Escape codes would act
-/// on the terminal that shows the text.
+/// `text` with each hidden character as text: `\xNN` for a control
+/// character, `\u{N}` for an invisible one.
 pub fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
 
     for c in text.chars() {
-        if is_hidden(c) {
-            out.push_str(&format!("\\x{:02x}", u32::from(c)));
-        } else {
-            out.push(c);
+        match c {
+            c if c.is_control() && c != '\t' => {
+                out.push_str(&format!("\\x{:02x}", u32::from(c)));
+            }
+            c if is_hidden(c) => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => out.push(c),
         }
     }
 
@@ -1199,6 +1231,20 @@ mod tests {
         assert!(monitors.list().is_empty());
 
         try_start(&"d".repeat(MAX_DESCRIPTION)).unwrap();
+    }
+
+    #[test]
+    fn invisible_format_characters_are_shown() {
+        // A tag-encoded "hi", a bidi override, a zero-width space, a BOM,
+        // a soft hyphen and a line separator.
+        let hidden = "a\u{E0068}\u{E0069}b\u{202E}c\u{200B}d\u{FEFF}e\u{AD}f\u{2028}g";
+        let shown = escape(hidden);
+
+        assert_eq!(
+            shown,
+            "a\\u{e0068}\\u{e0069}b\\u{202e}c\\u{200b}d\\u{feff}e\\u{ad}f\\u{2028}g"
+        );
+        assert_eq!(escape("plain café\ttab"), "plain café\ttab");
     }
 
     #[test]

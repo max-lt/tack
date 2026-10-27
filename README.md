@@ -173,6 +173,7 @@ Output:
 - The model gets the output as quoted data, not as an instruction.
 - Bytes that are not UTF-8 become U+FFFD.
 - Control characters, except tab, become `\xNN` text. An escape code in a log does not change the terminal.
+- Invisible characters become `\u{N}` text: format characters (Unicode category Cf, such as bidi controls and zero-width characters), the line and paragraph separators, and the tag block U+E0000 to U+E007F. A log line cannot hide text from the user that the model reads.
 
 Permissions and resume:
 
