@@ -21,6 +21,9 @@ const PREVIEW_CHARS: usize = 80;
 /// is format 1.
 const FORMAT_VERSION: u64 = 1;
 
+/// Largest session file that is read. Real sessions are well under 1 MiB.
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSession {
     pub id: String,
@@ -201,6 +204,30 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// Read a session file, or fail when it is over `MAX_FILE_BYTES`. The size
+/// is checked before the read, and the read stops at the limit too.
+fn read_capped(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let too_large = || {
+        std::io::Error::other(format!("the file is too large (over {MAX_FILE_BYTES} bytes)"))
+    };
+
+    let file = fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_FILE_BYTES {
+        return Err(too_large());
+    }
+
+    let mut contents = String::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_string(&mut contents)?;
+
+    if contents.len() as u64 > MAX_FILE_BYTES {
+        return Err(too_large());
+    }
+
+    Ok(contents)
+}
+
 fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
     let path = session_path(dir, id)?;
 
@@ -208,7 +235,7 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
         bail!("No saved session with id {id}");
     }
 
-    let contents = fs::read_to_string(&path).context("Failed to read session file")?;
+    let contents = read_capped(&path).with_context(|| format!("Failed to read session {id}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&contents).with_context(|| format!("Session {id} is corrupted"))?;
 
@@ -237,7 +264,7 @@ fn list_in(dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
         }
 
         // Unreadable or foreign files are skipped, not fatal.
-        let Ok(contents) = fs::read_to_string(&path) else {
+        let Ok(contents) = read_capped(&path) else {
             continue;
         };
         let Ok(stored) = serde_json::from_str::<StoredSession>(&contents) else {
@@ -525,6 +552,19 @@ mod tests {
         json.as_object_mut().unwrap().remove("version");
         write_raw(tmp.path(), "2", &json.to_string());
         load_from(tmp.path(), "2").unwrap();
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_refused_without_a_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_in(tmp.path(), &stored("ok", "/p", 1, "hi")).unwrap();
+        // Sparse: no disk space, but the size says 1 byte over the limit.
+        let big = fs::File::create(tmp.path().join("big.json")).unwrap();
+        big.set_len(MAX_FILE_BYTES + 1).unwrap();
+
+        let err = format!("{:#}", load_from(tmp.path(), "big").unwrap_err());
+        assert!(err.contains("Failed to read session big: the file is too large"), "{err}");
+        assert_eq!(list_in(tmp.path(), Path::new("/p")).unwrap().len(), 1);
     }
 
     #[test]
