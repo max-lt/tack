@@ -42,6 +42,17 @@ pub struct StoredSession {
     /// What the session had set up: terminals, later monitors and schedules.
     #[serde(default, skip_serializing_if = "Store::is_empty")]
     pub store: Store,
+    /// The session id that names the crosstalk identity, when it is not
+    /// `id`: /clear keeps the identity of the conversation before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crosstalk_session: Option<String>,
+}
+
+impl StoredSession {
+    /// The session id of the crosstalk daemon for this session.
+    pub fn crosstalk_id(&self) -> &str {
+        self.crosstalk_session.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// What the resume picker shows for one saved session.
@@ -495,6 +506,7 @@ pub(crate) mod tests {
                 },
             ],
             store: Store::default(),
+            crosstalk_session: None,
         }
     }
 
@@ -988,6 +1000,19 @@ pub(crate) mod tests {
         let err = load_from(tmp.path(), "copy").unwrap_err();
         assert!(err.to_string().contains("holds session 100"), "{err}");
         assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_crosstalk_id_is_the_saved_one_or_the_session_id() {
+        let mut s = stored("200", "/p", 1, "hi");
+        assert_eq!(s.crosstalk_id(), "200");
+
+        s.crosstalk_session = Some("100".to_string());
+        assert_eq!(s.crosstalk_id(), "100");
+
+        let tmp = tempfile::tempdir().unwrap();
+        save_in(tmp.path(), &s).unwrap();
+        assert_eq!(load_from(tmp.path(), "200").unwrap().crosstalk_id(), "100");
     }
 
     #[test]

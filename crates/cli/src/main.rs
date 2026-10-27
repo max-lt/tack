@@ -240,8 +240,15 @@ async fn main() -> Result<()> {
 
     // One crosstalk daemon per session id: a resumed session keeps its
     // identity and its peers.
+    // A conversation that went through /clear keeps the identity of its
+    // first id: the session file names it.
     #[cfg(feature = "crosstalk")]
-    let crosstalk = match start_crosstalk(&id).await {
+    let crosstalk_id = stored
+        .as_ref()
+        .map_or_else(|| id.clone(), |stored| stored.crosstalk_id().to_string());
+
+    #[cfg(feature = "crosstalk")]
+    let crosstalk = match start_crosstalk(&crosstalk_id).await {
         Ok(client) => {
             builder = builder.crosstalk(client.clone());
             Some(client)

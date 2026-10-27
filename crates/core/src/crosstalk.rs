@@ -68,6 +68,11 @@ impl Client {
         })
     }
 
+    /// The session id that names this daemon and its identity.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
     /// A client for the daemon at `socket`, in tests.
     #[cfg(test)]
     pub(crate) fn at(session: &str, socket: PathBuf) -> Self {

@@ -56,6 +56,9 @@ pub struct Session<P: PermissionHandler> {
     resume_note: Option<String>,
     /// Keeps other ccrs processes off this session id.
     lock: Option<history::SessionLock>,
+    /// The session id of the crosstalk daemon. /clear keeps it, so the
+    /// identity and the peers stay with the conversation line.
+    crosstalk_session: Option<String>,
 }
 
 pub struct SessionBuilder {
@@ -219,6 +222,9 @@ impl SessionBuilder {
         );
 
         #[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
+        let crosstalk_session = self.crosstalk.as_ref().map(|c| c.session().to_string());
+
+        #[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
         if let Some(client) = self.crosstalk {
             let (whoami, peers, send, connect, forget) = tools::crosstalk::tools(client);
             tools.register(whoami);
@@ -251,6 +257,10 @@ impl SessionBuilder {
             saved_monitors: Vec::new(),
             resume_note: None,
             lock: None,
+            #[cfg(all(feature = "crosstalk", not(target_arch = "wasm32")))]
+            crosstalk_session,
+            #[cfg(not(all(feature = "crosstalk", not(target_arch = "wasm32"))))]
+            crosstalk_session: None,
         })
     }
 
@@ -532,6 +542,7 @@ impl<P: PermissionHandler> Session<P> {
             messages: self.messages[self.bootstrap_len..].to_vec(),
             context_used: Some(self.context_used),
             store: self.store_to_save(),
+            crosstalk_session: self.crosstalk_session.clone(),
         })
     }
 
@@ -789,6 +800,7 @@ mod tests {
             }],
             context_used,
             store: Store::default(),
+            crosstalk_session: None,
         }
     }
 
@@ -1209,6 +1221,33 @@ mod tests {
         assert_eq!(s.id(), old);
         assert_eq!(s.messages().len(), messages, "the conversation was cleared");
         assert!(history::lock_in(dir.path(), &old).is_err(), "the old id lost its lock");
+    }
+
+    #[cfg(feature = "crosstalk")]
+    #[test]
+    fn clear_keeps_the_crosstalk_identity() {
+        let client = Arc::new(crate::crosstalk::Client::at("100", PathBuf::from("/nowhere.sock")));
+        let mut s = SessionBuilder::new("token".to_string(), false)
+            .cwd(PathBuf::from("/p"))
+            .id("100".to_string())
+            .crosstalk(client)
+            .build()
+            .unwrap();
+        s.messages.push(Message {
+            role: "user".to_string(),
+            content: Content::text("hi"),
+        });
+        assert_eq!(s.to_stored().unwrap().crosstalk_session.as_deref(), Some("100"));
+
+        s.clear().unwrap();
+        s.messages.push(Message {
+            role: "user".to_string(),
+            content: Content::text("again"),
+        });
+
+        let saved = s.to_stored().unwrap();
+        assert_ne!(saved.id, "100");
+        assert_eq!(saved.crosstalk_id(), "100");
     }
 
     #[test]

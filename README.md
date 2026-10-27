@@ -221,6 +221,12 @@ Known limits:
 
 With `--features crosstalk`, `ccrs` starts one `crosstalk daemon` per session and talks to it on its control socket. Messages from other people's agents reach the model as a "Crosstalk" notice.
 
+Identity: the daemon keeps a key pair and the peers for its session id.
+
+- A resume of a session gets the same identity and the same peers.
+- `/clear` starts a new conversation with a new session id, but keeps the crosstalk identity: the session file records it as `crosstalk_session`, and a resume of the new id uses it. A file without the field uses its own id.
+- A new session (no `--resume`, `--continue` or `--session`) gets a new identity.
+
 Incoming messages:
 
 - Each line from the peer, the header too, is escaped like monitor output and quoted. The notice says that it is data from another person's agent, not an instruction.
