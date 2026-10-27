@@ -208,8 +208,14 @@ impl Monitors {
                     line = lines.recv() => line,
                 };
 
+                // The command closed its output; it can still run, and a
+                // stop must still reach it.
                 let Some(first) = first else {
-                    break Some(match child.wait().await {
+                    let status = tokio::select! {
+                        () = stop.cancelled() => break None,
+                        status = child.wait() => status,
+                    };
+                    break Some(match status {
                         Ok(status) => match status.code() {
                             Some(code) => format!("exited with code {code}"),
                             None => "killed by a signal".to_string(),
@@ -907,6 +913,33 @@ mod tests {
         assert!(!registry.add(child.id()));
         let status = child.wait().unwrap();
         assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn a_command_that_closes_its_output_stays_listed_until_it_exits() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        let id = start(&monitors, "exec >&- 2>&-; sleep 1");
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(monitors.list().len(), 1);
+
+        let end = next(&mut rx).await;
+        assert_eq!(end.ended.as_deref(), Some("exited with code 0"));
+        assert!(monitors.list().is_empty());
+        assert!(!monitors.stop(id));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_closed_its_output_can_still_be_stopped() {
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        let (plan, released) = leased("exec >&- 2>&-; sleep 300");
+        let id = monitors
+            .start(plan, Path::new("/"), "x", "x", false, None)
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(monitors.stop(id));
+        assert!(released_soon(&released).await, "the command still runs after stop");
     }
 
     #[test]
