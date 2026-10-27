@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
@@ -31,9 +31,12 @@ use claude_code_core::permission::PermissionHandler;
 
 pub use event::{ChannelEventHandler, SessionCmd, UiEvent};
 
-/// Set while the TUI owns the terminal: raw mode, alternate screen, mouse
-/// capture. Only then must an exit restore the terminal.
+/// Set while the TUI owns the terminal: raw mode and alternate screen.
+/// Only then must an exit restore the terminal.
 pub static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lines that PageUp and PageDown scroll.
+const PAGE_LINES: u16 = 10;
 
 // ---------------------------------------------------------------------------
 // Display model
@@ -439,6 +442,16 @@ impl App {
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.scroll = self.scroll.saturating_add(1);
                 self.auto_scroll = true; // re-enable when scrolling down
+            }
+
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(PAGE_LINES);
+                self.auto_scroll = false;
+            }
+
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(PAGE_LINES).min(self.max_scroll);
+                self.auto_scroll = self.scroll >= self.max_scroll;
             }
 
             _ => {}
@@ -1112,7 +1125,6 @@ pub fn run(
     crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
     )?;
 
     let backend = CrosstermBackend::new(std::io::stdout());
@@ -1125,7 +1137,6 @@ pub fn run(
         let mut stdout = std::io::stdout();
         let _ = crossterm::execute!(
             stdout,
-            crossterm::event::DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen,
         );
         let _ = crossterm::terminal::disable_raw_mode();
@@ -1171,7 +1182,6 @@ pub fn run(
             crossterm::execute!(
                 std::io::stdout(),
                 crossterm::terminal::EnterAlternateScreen,
-                crossterm::event::EnableMouseCapture,
             )?;
             let backend = CrosstermBackend::new(std::io::stdout());
             terminal = Terminal::new(backend)?;
@@ -1218,20 +1228,6 @@ pub fn run(
                         break;
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        app.scroll = app.scroll.saturating_sub(3);
-                        app.auto_scroll = false;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        app.scroll = app.scroll.saturating_add(3);
-                        // Re-enable auto-scroll if we've reached the bottom
-                        if app.scroll >= app.max_scroll {
-                            app.auto_scroll = true;
-                        }
-                    }
-                    _ => {}
-                },
                 Event::Resize(_, _) => {
                     // Force full redraw after resize
                     terminal.clear()?;
@@ -1256,7 +1252,6 @@ pub fn run(
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen,
     )?;
 
@@ -1308,6 +1303,24 @@ mod tests {
             });
         }
         out
+    }
+
+    #[test]
+    fn page_keys_scroll_the_conversation() {
+        let (mut app, _rx) = busy_app();
+        app.max_scroll = 100;
+        app.scroll = 50;
+        app.auto_scroll = true;
+        let key = |code| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+
+        app.handle_key(key(KeyCode::PageUp));
+        assert!(app.scroll < 50);
+        assert!(!app.auto_scroll);
+
+        app.scroll = 95;
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 100);
+        assert!(app.auto_scroll);
     }
 
     #[test]

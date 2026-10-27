@@ -147,7 +147,6 @@ async fn main() -> Result<()> {
             let _ = crossterm::terminal::disable_raw_mode();
             let _ = crossterm::execute!(
                 std::io::stdout(),
-                crossterm::event::DisableMouseCapture,
                 crossterm::terminal::LeaveAlternateScreen,
             );
         }
