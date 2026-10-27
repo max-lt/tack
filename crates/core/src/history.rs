@@ -144,7 +144,9 @@ pub(crate) fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
             .create(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
+            .map_err(not_a_link)
             .context("Failed to open the session lock")?;
 
         // SAFETY: the descriptor is open for as long as `file` lives.
@@ -268,12 +270,13 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // A new file only: a name planted in advance, a link too, fails.
+    options.write(true).create_new(true);
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
 
     let mut file = options.open(path)?;
@@ -281,6 +284,16 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // On disk before the rename, or else a crash can leave an empty file
     // under the final name.
     file.sync_all()
+}
+
+/// A clear error for a symbolic link that O_NOFOLLOW refused.
+fn not_a_link(error: std::io::Error) -> std::io::Error {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ELOOP) {
+        return std::io::Error::other("the file is a symlink; ccrs does not follow it");
+    }
+
+    error
 }
 
 /// Read a session file, or fail when it is over `MAX_FILE_BYTES`. The size
@@ -292,7 +305,16 @@ fn read_capped(path: &Path) -> std::io::Result<String> {
         std::io::Error::other(format!("the file is too large (over {MAX_FILE_BYTES} bytes)"))
     };
 
-    let file = fs::File::open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let file = options.open(path).map_err(not_a_link)?;
     if file.metadata()?.len() > MAX_FILE_BYTES {
         return Err(too_large());
     }
@@ -755,6 +777,59 @@ mod tests {
         let mut left = tmp_files(tmp.path());
         left.sort();
         assert_eq!(left, [mine, "notes.tmp".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_session_file_is_refused_and_never_written_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target.json");
+        save_in(outside.path(), &stored("target", "/p", 1, "outside")).unwrap();
+        let original = fs::read(&target).unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("1.json")).unwrap();
+
+        let err = format!("{:#}", load_from(tmp.path(), "1").unwrap_err());
+        assert!(err.contains("symlink"), "{err}");
+        assert!(list_in(tmp.path(), Path::new("/p")).unwrap().is_empty());
+
+        // A save replaces the link itself, never the file it points to.
+        save_in(tmp.path(), &stored("1", "/p", 2, "inside")).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(!fs::symlink_metadata(tmp.path().join("1.json")).unwrap().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_lock_file_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("victim");
+        fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("1.lock")).unwrap();
+
+        assert!(lock_in(tmp.path(), "1").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+
+        // A link to a file that does not exist is not created either.
+        let missing = outside.path().join("made");
+        std::os::unix::fs::symlink(&missing, tmp.path().join("2.lock")).unwrap();
+        assert!(lock_in(tmp.path(), "2").is_err());
+        assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temporary_link_is_not_written_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("victim");
+        fs::write(&target, "keep").unwrap();
+        let link = tmp.path().join("planted.tmp");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(write_private(&link, b"overwrite").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
     }
 
     #[test]
