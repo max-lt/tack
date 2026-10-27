@@ -108,12 +108,21 @@ fn session_path(dir: &Path, id: &str) -> Result<PathBuf> {
 
 fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
     let path = session_path(dir, &session.id)?;
-    let tmp = path.with_extension("json.tmp");
+    // One name per write: two writers of one id must not share a file.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!("{}.{}.{n}.tmp", session.id, std::process::id()));
     let contents = serde_json::to_string(session)?;
 
     // Write then rename, so a crash mid-write never corrupts a saved session.
-    write_private(&tmp, contents.as_bytes()).context("Failed to write session file")?;
-    fs::rename(&tmp, &path).context("Failed to replace session file")?;
+    let written = write_private(&tmp, contents.as_bytes())
+        .context("Failed to write session file")
+        .and_then(|()| fs::rename(&tmp, &path).context("Failed to replace session file"));
+
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written?;
 
     Ok(())
 }
@@ -131,7 +140,11 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         options.mode(0o600);
     }
 
-    options.open(path)?.write_all(contents)
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    // On disk before the rename, or else a crash can leave an empty file
+    // under the final name.
+    file.sync_all()
 }
 
 fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
@@ -367,6 +380,39 @@ mod tests {
 
         assert_eq!(mode(&dir), 0o700);
         assert_eq!(mode(&dir.join("1.json")), 0o600);
+    }
+
+    #[test]
+    fn two_writers_on_one_id_never_leave_a_broken_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        save_in(&dir, &stored("1", "/p", 1, "start")).unwrap();
+
+        let writers: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|who| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    // Large enough that one write takes several syscalls.
+                    let body = who.repeat(200_000);
+                    for _ in 0..50 {
+                        save_in(&dir, &stored("1", "/p", 1, &body)).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        let mut reads = 0;
+        while writers.iter().any(|w| !w.is_finished()) {
+            load_from(&dir, "1").expect("a reader saw a broken session file");
+            reads += 1;
+        }
+        for w in writers {
+            w.join().unwrap();
+        }
+
+        assert!(reads > 0);
+        load_from(&dir, "1").unwrap();
     }
 
     #[test]
