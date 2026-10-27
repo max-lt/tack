@@ -567,6 +567,31 @@ mod tests {
         assert_eq!(list_in(tmp.path(), Path::new("/p")).unwrap().len(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_file_is_for_the_owner_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _lock = lock_in(tmp.path(), "1").unwrap();
+
+        assert_eq!(mode(&tmp.path().join("1.lock")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_that_cannot_be_created_is_an_error_not_a_panic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ro");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let err = lock_in(&dir, "1").err().expect("lock in a read-only directory");
+        assert!(format!("{err:#}").contains("Failed to open the session lock"), "{err:#}");
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[test]
     fn list_filters_by_cwd_and_sorts_recent_first() {
         let tmp = tempfile::tempdir().unwrap();
