@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -140,15 +140,7 @@ impl Monitors {
         .into_iter()
         .flatten()
         {
-            let tx = line_tx.clone();
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stream).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-            });
+            tokio::spawn(read_lines(stream, line_tx.clone()));
         }
         drop(line_tx);
 
@@ -185,7 +177,7 @@ impl Monitors {
                     });
                 };
 
-                let mut collected = vec![clip(first)];
+                let mut collected = vec![first];
                 let mut dropped = 0;
 
                 // Collect what follows within the window into one event. A
@@ -202,7 +194,7 @@ impl Monitors {
                     };
 
                     if collected.len() < MAX_LINES {
-                        collected.push(clip(line));
+                        collected.push(line);
                     } else {
                         dropped += 1;
                     }
@@ -255,16 +247,61 @@ impl Drop for Monitors {
     }
 }
 
-fn clip(mut line: String) -> String {
-    if line.len() > MAX_LINE {
-        let mut end = MAX_LINE;
-        while !line.is_char_boundary(end) {
-            end -= 1;
+/// Send each line of `stream`, as text. A line keeps at most `MAX_LINE`
+/// bytes: the rest is skipped while it is read, so a line without an end
+/// does not fill memory. Bytes that are not UTF-8 become U+FFFD.
+async fn read_lines(stream: impl AsyncRead + Unpin, tx: mpsc::UnboundedSender<String>) {
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    let mut clipped = false;
+
+    while let Ok(buf) = reader.fill_buf().await {
+        if buf.is_empty() {
+            if !line.is_empty() || clipped {
+                let _ = tx.send(finish(&line, clipped));
+            }
+            break;
         }
-        line.truncate(end);
-        line.push('…');
+
+        let end = buf.iter().position(|&b| b == b'\n');
+        let part = &buf[..end.unwrap_or(buf.len())];
+        let room = MAX_LINE.saturating_sub(line.len());
+
+        line.extend_from_slice(&part[..part.len().min(room)]);
+        clipped |= part.len() > room;
+
+        let used = end.map_or(buf.len(), |end| end + 1);
+        reader.consume(used);
+
+        if end.is_some() {
+            if tx.send(finish(&line, clipped)).is_err() {
+                break;
+            }
+            line.clear();
+            clipped = false;
+        }
     }
-    line
+}
+
+/// The text of one line. A clipped line loses a character cut in two and
+/// ends with an ellipsis.
+fn finish(bytes: &[u8], clipped: bool) -> String {
+    let mut bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+
+    if clipped
+        && let Err(e) = std::str::from_utf8(bytes)
+        && e.error_len().is_none()
+    {
+        bytes = &bytes[..e.valid_up_to()];
+    }
+
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+
+    if clipped {
+        text.push('…');
+    }
+
+    text
 }
 
 #[cfg(test)]
@@ -396,13 +433,12 @@ mod tests {
 
     #[test]
     fn clipping_keeps_whole_characters() {
-        // 'é' is 2 bytes: byte 1000 falls inside the 501st one... after 500.
+        // 'é' is 2 bytes: after "x", byte 1000 cuts the 500th one in two.
         let line = format!("x{}", "é".repeat(600));
-        let clipped = clip(line);
+        let clipped = finish(&line.as_bytes()[..MAX_LINE], true);
 
-        assert!(clipped.len() <= MAX_LINE + '…'.len_utf8());
-        assert!(clipped.ends_with('…'));
-        assert_eq!(clip("short".to_string()), "short");
+        assert_eq!(clipped, format!("x{}…", "é".repeat(499)));
+        assert_eq!(finish(b"short\r", false), "short");
     }
 
     #[tokio::test]
@@ -548,6 +584,27 @@ mod tests {
 
         assert!(body.iter().all(|l| l.starts_with('>')), "{text}");
         assert_eq!(text.lines().filter(|l| l.starts_with("Monitor ")).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn bytes_that_are_not_utf8_do_not_stop_the_reading() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        start(&monitors, "printf 'bad \\377 byte\\n'; sleep 0.5; echo after");
+
+        let lines: Vec<String> = until_end(&mut rx).await.into_iter().flat_map(|e| e.lines).collect();
+        assert_eq!(lines, ["bad \u{FFFD} byte", "after"]);
+    }
+
+    #[tokio::test]
+    async fn a_huge_line_without_a_newline_is_clipped_while_read() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        // 20 MB on one line, then a short one.
+        start(&monitors, "head -c 20000000 /dev/zero | tr '\\0' a; echo; echo next");
+
+        let lines: Vec<String> = until_end(&mut rx).await.into_iter().flat_map(|e| e.lines).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), MAX_LINE + '…'.len_utf8());
+        assert_eq!(lines[1], "next");
     }
 
     #[test]
