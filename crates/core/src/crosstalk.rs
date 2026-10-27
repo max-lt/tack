@@ -83,6 +83,14 @@ impl Client {
     }
 
     async fn exchange(&self, cmd: &str, args: &[&str]) -> Result<String> {
+        // The request can hold a message, and the reply goes to the model:
+        // the socket must be the daemon of this user.
+        if let Some((socket, parent)) = nodes(&self.socket) {
+            // SAFETY: geteuid takes no argument and cannot fail.
+            check_socket(&socket, &parent, unsafe { libc::geteuid() })
+                .with_context(|| format!("crosstalk socket {}", self.socket.display()))?;
+        }
+
         let mut stream = UnixStream::connect(&self.socket)
             .await
             .with_context(|| format!("crosstalk daemon not reachable at {}", self.socket.display()))?;
@@ -143,6 +151,64 @@ impl Client {
 
         Ok((reply != INBOX_EMPTY && !reply.is_empty()).then_some(reply))
     }
+}
+
+/// What the socket checks need to know about a path.
+#[derive(Clone, Copy)]
+struct Node {
+    uid: u32,
+    mode: u32,
+    kind: NodeKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NodeKind {
+    Socket,
+    Dir,
+    Other,
+}
+
+/// The socket and its parent directory, without following a link. `None`
+/// when the socket does not exist: the connect then fails with a clear
+/// error.
+fn nodes(socket: &std::path::Path) -> Option<(Node, Node)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let node = |meta: std::fs::Metadata| Node {
+        uid: meta.uid(),
+        mode: meta.mode() & 0o7777,
+        kind: if meta.file_type().is_socket() {
+            NodeKind::Socket
+        } else if meta.is_dir() {
+            NodeKind::Dir
+        } else {
+            NodeKind::Other
+        },
+    };
+
+    let socket_meta = std::fs::symlink_metadata(socket).ok()?;
+    let parent_meta = std::fs::metadata(socket.parent()?).ok()?;
+    Some((node(socket_meta), node(parent_meta)))
+}
+
+/// Refuse a socket that another user could own or replace: one that is
+/// not a socket (a link, a file), one of another user, one that others can
+/// write, and one in a directory that others can write without the sticky
+/// bit.
+fn check_socket(socket: &Node, parent: &Node, me: u32) -> Result<()> {
+    if socket.kind != NodeKind::Socket {
+        bail!("not a socket; ccrs does not follow a link");
+    }
+    if socket.uid != me {
+        bail!("belongs to another user");
+    }
+    if socket.mode & 0o022 != 0 {
+        bail!("others can write to it");
+    }
+    if parent.mode & 0o022 != 0 && parent.mode & 0o1000 == 0 {
+        bail!("its directory lets others replace it (writable, no sticky bit)");
+    }
+    Ok(())
 }
 
 /// One drained event: `[kind] from <id> via <hub> (<description>)` then the
@@ -374,6 +440,68 @@ mod timeout_tests {
 
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(err.to_string().contains("not reachable"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::fake::{FakeDaemon, Reply};
+    use super::*;
+
+    fn chmod(path: &std::path::Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_socket_that_others_can_write_is_refused() {
+        let daemon = FakeDaemon::start(Reply::Text("ok".to_string()));
+        let client = Client::at("test", daemon.path().to_path_buf());
+        assert_eq!(client.request("ping", &[]).await.unwrap(), "ok");
+
+        chmod(daemon.path(), 0o777);
+        let err = client.request("ping", &[]).await.unwrap_err();
+        assert!(format!("{err:#}").contains("others can write"), "{err:#}");
+        assert!(daemon.requests.lock().unwrap().len() == 1, "the request went through");
+    }
+
+    #[tokio::test]
+    async fn a_symlink_to_a_socket_is_refused() {
+        let daemon = FakeDaemon::start(Reply::Text("ok".to_string()));
+        let link = daemon.path().with_file_name("link.sock");
+        std::os::unix::fs::symlink(daemon.path(), &link).unwrap();
+        let client = Client::at("test", link);
+
+        let err = client.request("ping", &[]).await.unwrap_err();
+        assert!(format!("{err:#}").contains("not a socket"), "{err:#}");
+        assert!(daemon.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_parent_that_others_can_write_needs_the_sticky_bit() {
+        let daemon = FakeDaemon::start(Reply::Text("ok".to_string()));
+        let parent = daemon.path().parent().unwrap().to_path_buf();
+        let client = Client::at("test", daemon.path().to_path_buf());
+
+        chmod(&parent, 0o777);
+        let err = client.request("ping", &[]).await.unwrap_err();
+        assert!(format!("{err:#}").contains("directory"), "{err:#}");
+
+        chmod(&parent, 0o1777);
+        assert_eq!(client.request("ping", &[]).await.unwrap(), "ok");
+        chmod(&parent, 0o700);
+    }
+
+    #[test]
+    fn a_socket_of_another_user_is_refused() {
+        let me = 501;
+        let socket = Node { uid: me, mode: 0o755, kind: NodeKind::Socket };
+        let parent = Node { uid: 0, mode: 0o1777, kind: NodeKind::Dir };
+
+        assert!(check_socket(&socket, &parent, me).is_ok());
+        let theirs = Node { uid: 502, ..socket };
+        assert!(check_socket(&theirs, &parent, me).unwrap_err().to_string().contains("another user"));
     }
 }
 
