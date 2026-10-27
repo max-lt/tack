@@ -17,6 +17,10 @@ use tokio::net::UnixStream;
 /// How long a fresh daemon may take to answer `ping`.
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Longest wait for a reply, after any wait that the request asks for:
+/// a daemon that hangs must not hang ccrs.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The reply of `inbox` when no event is waiting.
 const INBOX_EMPTY: &str = "inbox empty";
 
@@ -53,8 +57,32 @@ impl Client {
         })
     }
 
-    /// Send one command and return the daemon's reply.
+    /// A client for the daemon at `socket`, in tests.
+    #[cfg(test)]
+    pub(crate) fn at(session: &str, socket: PathBuf) -> Self {
+        Self {
+            session: session.to_string(),
+            socket,
+        }
+    }
+
+    /// Send one command and return the daemon's reply, within
+    /// `REQUEST_TIMEOUT`.
     pub async fn request(&self, cmd: &str, args: &[&str]) -> Result<String> {
+        self.request_within(cmd, args, Duration::ZERO).await
+    }
+
+    /// `request`, for a command that waits `wait` on the daemon side.
+    async fn request_within(&self, cmd: &str, args: &[&str], wait: Duration) -> Result<String> {
+        let limit = wait + REQUEST_TIMEOUT;
+
+        match tokio::time::timeout(limit, self.exchange(cmd, args)).await {
+            Ok(reply) => reply,
+            Err(_) => bail!("crosstalk daemon did not answer {cmd} within {limit:?}"),
+        }
+    }
+
+    async fn exchange(&self, cmd: &str, args: &[&str]) -> Result<String> {
         let mut stream = UnixStream::connect(&self.socket)
             .await
             .with_context(|| format!("crosstalk daemon not reachable at {}", self.socket.display()))?;
@@ -109,8 +137,9 @@ impl Client {
 
     /// Wait up to `wait` for events and drain them. `None` when none came.
     pub async fn inbox(&self, wait: Duration) -> Result<Option<String>> {
-        let secs = wait.as_secs().min(300).to_string();
-        let reply = self.request("inbox", &[&secs]).await?;
+        let wait = wait.min(Duration::from_secs(300));
+        let secs = wait.as_secs().to_string();
+        let reply = self.request_within("inbox", &[&secs], wait).await?;
 
         Ok((reply != INBOX_EMPTY && !reply.is_empty()).then_some(reply))
     }
@@ -227,7 +256,129 @@ mod tests {
     }
 }
 
-/// Needs the `crosstalk` CLI and the default hub.
+/// A fake daemon on a socket in a temporary directory: no hub, no peer,
+/// nothing leaves the machine.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    pub enum Reply {
+        /// Answer each request with this text.
+        Text(String),
+        /// Read the request and never answer.
+        Silent,
+    }
+
+    pub struct FakeDaemon {
+        /// Kept so that the directory of the socket lives.
+        _dir: tempfile::TempDir,
+        pub socket: PathBuf,
+        pub requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl FakeDaemon {
+        pub fn start(reply: Reply) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("fake.sock");
+            Self::start_at(dir, socket, reply)
+        }
+
+        pub fn start_at(dir: tempfile::TempDir, socket: PathBuf, reply: Reply) -> Self {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let log = requests.clone();
+            let reply = Arc::new(reply);
+
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let (log, reply) = (log.clone(), reply.clone());
+                    tokio::spawn(async move {
+                        let (read, mut write) = stream.into_split();
+                        let mut line = String::new();
+                        let _ = BufReader::new(read).read_line(&mut line).await;
+                        if let Ok(request) = serde_json::from_str(&line) {
+                            log.lock().unwrap().push(request);
+                        }
+                        match &*reply {
+                            Reply::Text(text) => {
+                                let _ = write.write_all(text.as_bytes()).await;
+                            }
+                            Reply::Silent => std::future::pending::<()>().await,
+                        }
+                    });
+                }
+            });
+
+            Self {
+                _dir: dir,
+                socket,
+                requests,
+            }
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.socket
+        }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::fake::{FakeDaemon, Reply};
+    use super::*;
+
+    #[tokio::test]
+    async fn a_request_gets_its_reply() {
+        let daemon = FakeDaemon::start(Reply::Text("crosstalk_me".to_string()));
+        let client = Client::at("test", daemon.path().to_path_buf());
+
+        assert_eq!(client.request("whoami", &[]).await.unwrap(), "crosstalk_me");
+        assert_eq!(daemon.requests.lock().unwrap()[0]["cmd"], "whoami");
+    }
+
+    #[tokio::test]
+    async fn a_silent_daemon_gives_a_timeout_error() {
+        let daemon = FakeDaemon::start(Reply::Silent);
+        let client = Client::at("test", daemon.path().to_path_buf());
+
+        let started = tokio::time::Instant::now();
+        let err = client.request("peers", &[]).await.unwrap_err();
+
+        assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(1));
+        assert!(err.to_string().contains("did not answer"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_inbox_wait_gets_its_wait_plus_the_timeout() {
+        let daemon = FakeDaemon::start(Reply::Silent);
+        let client = Client::at("test", daemon.path().to_path_buf());
+
+        let started = tokio::time::Instant::now();
+        assert!(client.inbox(Duration::from_secs(1)).await.is_err());
+        let took = started.elapsed();
+
+        assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(1) + REQUEST_TIMEOUT + Duration::from_secs(1), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_is_down_gives_an_error_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::at("test", dir.path().join("none.sock"));
+
+        let started = tokio::time::Instant::now();
+        let err = client.request("ping", &[]).await.unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(err.to_string().contains("not reachable"), "{err}");
+    }
+}
+
+/// Needs the `crosstalk` CLI and the default hub. Not to run: it connects
+/// to a real hub.
 #[cfg(test)]
 mod daemon_tests {
     use super::*;
