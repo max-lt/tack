@@ -157,6 +157,14 @@ Three layers, merged in order:
 - `--auto` — approve tools without prompting. `deny` rules still apply.
 - `--dangerously-skip-permissions` — approve **every** tool call, ignoring all rules including `deny`. Use only in a sandbox (container, VM).
 
+### Terminals
+
+`TerminalOpen` starts a command under a PTY. `TerminalSend` types into it, `TerminalRead` returns its screen, `TerminalClose` stops it.
+
+| Limit | Value | When the limit is reached |
+|-------|-------|---------------------------|
+| Terminals open at one time, per session | 8 | `TerminalOpen` returns an error. |
+
 ### Monitors
 
 The `Monitor` tool runs a command in the background. Each line that the command writes to stdout or stderr wakes the model. `MonitorList` lists the monitors. `MonitorStop` stops one.

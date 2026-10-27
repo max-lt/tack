@@ -21,6 +21,10 @@ const SETTLE: Duration = Duration::from_millis(300);
 
 const POLL: Duration = Duration::from_millis(50);
 
+/// Most terminals open at one time in one session. Each holds a process,
+/// a PTY, a reader thread and the sandbox lease.
+pub const MAX_TERMINALS: usize = 8;
+
 #[derive(Default)]
 pub struct Terminals {
     open: Mutex<HashMap<u32, Terminal>>,
@@ -59,6 +63,12 @@ impl Terminals {
                 "rows and cols must be positive",
             ));
         };
+
+        if self.open.lock().unwrap().len() >= MAX_TERMINALS {
+            return Err(io::Error::other(format!(
+                "{MAX_TERMINALS} terminals are open; close one first"
+            )));
+        }
 
         let pty = native_pty_system()
             .openpty(PtySize {
@@ -290,6 +300,20 @@ fn key_bytes(name: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::sandbox::host_terminal;
+
+    #[test]
+    fn the_number_of_open_terminals_is_capped() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+        let open = || terminals.open(host_terminal("sleep 30"), dir.path(), 24, 80);
+
+        let ids: Vec<u32> = (0..MAX_TERMINALS).map(|_| open().unwrap()).collect();
+        let err = open().unwrap_err();
+        assert!(err.to_string().contains("terminals are open"), "{err}");
+
+        terminals.close(ids[0]).unwrap();
+        open().unwrap();
+    }
 
     #[test]
     fn keys_are_translated() {
