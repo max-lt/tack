@@ -770,6 +770,25 @@ mod tests {
         assert!(!monitors.stop(id));
     }
 
+    /// Known limit: a process that leaves the group with setsid is out of
+    /// reach of killpg. This test pins that behaviour.
+    #[tokio::test]
+    async fn a_process_that_calls_setsid_outlives_stop() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        let id = start(
+            &monitors,
+            "perl -MPOSIX -e 'POSIX::setsid(); exec \"sleep\", \"300\"' & echo $!; wait",
+        );
+        let pid = next(&mut rx).await.lines.remove(0);
+
+        monitors.stop(id);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let survived = alive(&pid);
+        std::process::Command::new("kill").args(["-9", &pid]).status().unwrap();
+        assert!(survived, "setsid child {pid} was killed: update the known limit");
+    }
+
     #[tokio::test]
     async fn kill_where_reaches_a_live_monitor() {
         let (monitors, mut rx) = Monitors::new(SharedStore::default());

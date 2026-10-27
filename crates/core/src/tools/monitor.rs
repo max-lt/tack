@@ -47,7 +47,9 @@ impl ToolDef for MonitorTool {
          together batched. Filter in the command so only lines worth a wake-up come out, \
          e.g. `tail -F app.log | grep --line-buffered ERROR`. It runs where Bash runs; set \
          host to run on the user's machine. It keeps running across turns and is started \
-         again when the session is resumed. Stop it with MonitorStop."
+         again when the session is resumed. Stop it with MonitorStop. A stop kills the \
+         process group of the command; a process that leaves the group (setsid, a \
+         daemon) keeps running."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -165,7 +167,10 @@ impl ToolDef for MonitorStopTool {
         };
 
         match self.monitors.stop(id) {
-            true => ToolOutput::success(format!("Monitor {id} stopped.")),
+            true => ToolOutput::success(format!(
+                "Monitor {id} stopped. A process that left its process group (setsid, a \
+                 daemon) is not stopped."
+            )),
             false => ToolOutput::error(format!("No running monitor {id}.")),
         }
     }

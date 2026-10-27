@@ -129,6 +129,21 @@ Three layers, merged in order:
 - `--auto` — approve tools without prompting. `deny` rules still apply.
 - `--dangerously-skip-permissions` — approve **every** tool call, ignoring all rules including `deny`. Use only in a sandbox (container, VM).
 
+### Monitors
+
+The `Monitor` tool runs a command in the background. Each line of output wakes the model.
+
+- A session runs 8 monitors or fewer.
+- A monitor stops after 10 events in one minute.
+- A resumed session asks again before it starts a saved monitor.
+- A stop, an exit, SIGTERM and SIGHUP kill the process group of the command.
+
+Known limits:
+
+- A process that leaves the process group (`setsid`, a daemon) does not stop with the monitor.
+- SIGKILL on `ccrs` does not stop the monitors.
+- In the sandbox, a stop kills the `container exec` client. A process in the VM can run until the VM stops, 5 minutes after the last command.
+
 ## Architecture
 
 ```
