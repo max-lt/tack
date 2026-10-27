@@ -1052,6 +1052,55 @@ mod container_tests {
     /// Needs `container system start` and pulls `debian:bookworm-slim`.
     #[tokio::test]
     #[ignore]
+    async fn a_monitor_in_the_vm_holds_it_up_until_stopped() {
+        use crate::monitor::{Monitors, Place, Spec};
+        use crate::store::SharedStore;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = AppleContainer::new("debian:bookworm-slim").with_idle(Duration::from_secs(1));
+        let (monitors, mut events) = Monitors::new(SharedStore::default());
+
+        let id = crate::tools::monitor::start(
+            &monitors,
+            &sandbox,
+            workspace.path(),
+            Spec {
+                command: "while true; do echo \"in-vm $(uname -s)\"; sleep 2; done",
+                description: "vm ticks",
+                place: Place::Sandbox,
+                id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.lines, ["in-vm Linux"]);
+
+        let name = sandbox.vm_name().await.unwrap();
+        let running = || {
+            let list = std::process::Command::new("container")
+                .arg("list")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&list.stdout).contains(&name)
+        };
+
+        // The monitor holds the lease: the VM stays up past the idle time.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(running(), "the VM stopped while a monitor ran in it");
+
+        assert!(monitors.stop(id));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!running(), "the VM should be stopped 1 s after the monitor stopped");
+    }
+
+    /// Needs `container system start` and pulls `debian:bookworm-slim`.
+    #[tokio::test]
+    #[ignore]
     async fn apple_container_is_offline_by_default() {
         let workspace = tempfile::tempdir().unwrap();
         let probe = "timeout 3 bash -c 'echo > /dev/tcp/1.1.1.1/80' && echo online || echo offline";
