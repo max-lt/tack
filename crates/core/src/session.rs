@@ -400,11 +400,30 @@ impl<P: PermissionHandler> Session<P> {
             };
 
             if !self.permissions.allow(&tool) {
-                write!(note, "\n- monitor {} refused, dropped: {shown_command}", m.id).unwrap();
+                write!(
+                    note,
+                    "\n- monitor {} refused, dropped: {shown_command}",
+                    m.id
+                )
+                .unwrap();
                 continue;
             }
 
-            let result = tools::monitor::start(&self.monitors, &*self.sandbox, &self.cwd, crate::monitor::Spec { command: &m.command, description: &m.description, place: if m.host { crate::monitor::Place::Host } else { crate::monitor::Place::Sandbox }, id: Some(m.id) })
+            let result = tools::monitor::start(
+                &self.monitors,
+                &*self.sandbox,
+                &self.cwd,
+                crate::monitor::Spec {
+                    command: &m.command,
+                    description: &m.description,
+                    place: if m.host {
+                        crate::monitor::Place::Host
+                    } else {
+                        crate::monitor::Place::Sandbox
+                    },
+                    id: Some(m.id),
+                },
+            )
             .await;
 
             match result {
@@ -644,7 +663,9 @@ impl<P: PermissionHandler> Session<P> {
     /// Ask for permission to write a sandboxed command's changes to the
     /// workspace, and write them. Returns a note for the model.
     async fn apply_changes(&mut self, command: &str, changes: &[FileChange]) -> String {
-        let accepted = self.permissions.allow(&Tool::ApplyChanges { command, changes });
+        let accepted = self
+            .permissions
+            .allow(&Tool::ApplyChanges { command, changes });
 
         // The sandbox's copy must match what the workspace gets: rejected
         // changes are undone there too.
@@ -683,7 +704,9 @@ impl<P: PermissionHandler> Session<P> {
 
             match result {
                 Ok(()) => writeln!(note, "  {verb} {}", change.path().display()).unwrap(),
-                Err(e) => writeln!(note, "  failed to apply {}: {e}", change.path().display()).unwrap(),
+                Err(e) => {
+                    writeln!(note, "  failed to apply {}: {e}", change.path().display()).unwrap()
+                }
             }
         }
 
@@ -845,7 +868,10 @@ mod tests {
         let note = s.restart_monitors().await.unwrap();
 
         assert_eq!(s.monitors.list().len(), 1);
-        assert!(note.contains("- monitor 1 dropped: second (sleep 30), the id is used twice"), "{note}");
+        assert!(
+            note.contains("- monitor 1 dropped: second (sleep 30), the id is used twice"),
+            "{note}"
+        );
         assert!(note.contains("- monitor 1 dropped: third"), "{note}");
     }
 
@@ -855,7 +881,16 @@ mod tests {
         let mut s = session_in(dir.path(), AllowAll);
         let mut events = s.take_monitor_events().unwrap();
         s.monitors
-            .start(crate::sandbox::host_terminal("true"), dir.path(), crate::monitor::Spec { command: "true", description: "x", place: crate::monitor::Place::Host, id: Some(3) })
+            .start(
+                crate::sandbox::host_terminal("true"),
+                dir.path(),
+                crate::monitor::Spec {
+                    command: "true",
+                    description: "x",
+                    place: crate::monitor::Place::Host,
+                    id: Some(3),
+                },
+            )
             .unwrap();
         // Output event or end event: wait for the end.
         while events.recv().await.unwrap().ended.is_none() {}
@@ -871,7 +906,16 @@ mod tests {
 
         let id = resumed
             .monitors
-            .start(crate::sandbox::host_terminal("sleep 30"), dir.path(), crate::monitor::Spec { command: "sleep 30", description: "x", place: crate::monitor::Place::Host, id: None })
+            .start(
+                crate::sandbox::host_terminal("sleep 30"),
+                dir.path(),
+                crate::monitor::Spec {
+                    command: "sleep 30",
+                    description: "x",
+                    place: crate::monitor::Place::Host,
+                    id: None,
+                },
+            )
             .unwrap();
         assert_eq!(id, 4);
     }
@@ -942,7 +986,16 @@ mod tests {
         let cmd = "sleep 300 & echo $!; wait";
 
         s.monitors
-            .start(crate::sandbox::host_terminal(cmd), dir.path(), crate::monitor::Spec { command: cmd, description: "x", place: crate::monitor::Place::Host, id: None })
+            .start(
+                crate::sandbox::host_terminal(cmd),
+                dir.path(),
+                crate::monitor::Spec {
+                    command: cmd,
+                    description: "x",
+                    place: crate::monitor::Place::Host,
+                    id: None,
+                },
+            )
             .unwrap();
         let pid = events.recv().await.unwrap().lines.remove(0);
 
@@ -950,7 +1003,10 @@ mod tests {
 
         let mut gone = false;
         for _ in 0..50 {
-            let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap();
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap();
             if !alive.success() {
                 gone = true;
                 break;
@@ -1028,7 +1084,10 @@ mod tests {
         let mut s = session_in(dir.path(), AllowAll);
         let note = s.apply_changes("make", &changes()).await;
 
-        assert_eq!(std::fs::read(dir.path().join("new/out.txt")).unwrap(), b"hi");
+        assert_eq!(
+            std::fs::read(dir.path().join("new/out.txt")).unwrap(),
+            b"hi"
+        );
         assert!(!dir.path().join("gone.txt").exists());
         assert!(note.contains("wrote new/out.txt") && note.contains("deleted gone.txt"));
     }
