@@ -166,6 +166,7 @@ The `Monitor` tool runs a command in the background. Each line that the command 
 | Lines in one event | 100 | The event tells how many lines it dropped. |
 | Bytes of output in one event, after the escape | 16384 | The event tells how many lines it dropped. |
 | Bytes in one line, after the escape | 1000 | The line is cut and ends with an ellipsis (U+2026). |
+| Bytes in a description, on one line | 200 | `Monitor` returns an error. A saved monitor with a longer description does not start at resume. |
 
 Lines that come less than 300 ms apart go into one event. An event stays open for 2 s or less.
 
@@ -178,7 +179,7 @@ Output:
 
 Permissions and resume:
 
-- `Monitor` asks for permission, like `Bash`. A rule such as `Monitor(tail:*)` allows it. `MonitorList` and `MonitorStop` do not ask.
+- `Monitor` asks for permission, like `Bash`. A rule such as `Monitor(tail:*)` allows it in the sandbox, but never with `host: true`. A `Bash(...)` deny rule also denies the command in `Monitor`. `MonitorList` and `MonitorStop` do not ask.
 - The session file keeps the monitors. A resumed session asks again before it starts each one, because the file can change between runs.
 - `ccrs -p` does not start the saved monitors. It keeps them in the session file, and the next interactive run asks to start them.
 - `ccrs -p` runs one turn. A monitor that the model starts in `-p` stops when the run ends, and its output does not reach the model. The tool result tells the model so. The monitor stays in the session file for a later resume.
@@ -199,11 +200,13 @@ Known limits:
 
 `ccrs` saves each session in `sessions/<id>.json` in its config directory.
 
-- Format version 2. `ccrs` reads versions 1 and 2. It refuses a file with a higher version, so that a save cannot erase fields it does not know. An older `ccrs` refuses a version 2 file.
+- Format version 2. `ccrs` reads versions 1 and 2. It refuses a file with a higher version, so that a save cannot erase fields it does not know. A `ccrs` that reads only version 1 refuses a version 2 file.
 - Version 2 adds the highest terminal and monitor ids ever used, so that a new terminal or monitor does not take the id of one that the history names.
 - The directories have mode 0700 and the files mode 0600. A directory that belongs to another user is refused.
-- One `ccrs` process at a time opens a session. A second one stops with an error.
-- A file over 64 MiB, or a symbolic link, is refused.
+- One `ccrs` process at a time opens a session: it holds a lock on `sessions/<id>.lock`. A second one stops with an error. `/clear` moves the lock to the new id.
+- `ccrs` does not read a file over 64 MiB, and it does not follow a symbolic link. A save replaces a link with a file and does not write to its target.
+- The resume picker reads the 500 most recently changed session files.
+- A save writes a temporary file, then renames it. When `ccrs` opens the sessions directory, it removes the temporary files of processes that are gone.
 
 ## Architecture
 
