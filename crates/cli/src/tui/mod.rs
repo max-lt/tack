@@ -1257,6 +1257,41 @@ mod tests {
         assert_eq!(app.state, AppState::Idle);
     }
 
+    fn monitor_event() -> UiEvent {
+        UiEvent::Monitor(claude_code_core::monitor::MonitorEvent {
+            id: 1,
+            description: "log".to_string(),
+            lines: vec!["ERROR disk full".to_string()],
+            dropped: 0,
+            ended: None,
+        })
+    }
+
+    #[test]
+    fn monitor_output_waits_for_the_turn_to_end() {
+        let (mut app, mut rx) = busy_app();
+
+        app.handle_ui_event(monitor_event());
+        assert!(sent(&mut rx).is_empty());
+        assert_eq!(app.queue.len(), 1);
+
+        app.handle_ui_event(done());
+        let sent = sent(&mut rx);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].starts_with("send:Monitor 1 | log\n> ERROR disk full"), "{sent:?}");
+    }
+
+    #[test]
+    fn monitor_output_starts_a_turn_when_idle() {
+        let (mut app, mut rx) = busy_app();
+        app.handle_ui_event(done());
+        sent(&mut rx);
+
+        app.handle_ui_event(monitor_event());
+        assert_eq!(sent(&mut rx).len(), 1);
+        assert!(app.state.is_busy());
+    }
+
     #[test]
     fn queued_commands_run_as_commands() {
         let (mut app, mut rx) = busy_app();

@@ -170,3 +170,57 @@ impl ToolDef for MonitorStopTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::LocalShell;
+    use crate::store::SharedStore;
+
+    fn tools() -> (MonitorTool, MonitorListTool, MonitorStopTool) {
+        let (monitors, _rx) = Monitors::new(SharedStore::default());
+        super::tools(monitors, Arc::new(LocalShell))
+    }
+
+    #[tokio::test]
+    async fn stop_on_an_unknown_id_is_an_error() {
+        let (_, _, stop) = tools();
+
+        let out = stop.execute(&serde_json::json!({ "id": 42 }), Path::new("/")).await;
+        assert!(out.is_error);
+        assert!(out.content.contains("No running monitor 42"));
+
+        let out = stop.execute(&serde_json::json!({}), Path::new("/")).await;
+        assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn list_drops_a_stopped_monitor() {
+        let (start, list, stop) = tools();
+        let input = |cmd: &str, what: &str| serde_json::json!({ "command": cmd, "description": what });
+
+        let a = start.execute(&input("sleep 30", "first"), Path::new("/")).await;
+        let b = start.execute(&input("sleep 30", "second"), Path::new("/")).await;
+        assert!(a.content.starts_with("Monitor 1 started"), "{}", a.content);
+        assert!(b.content.starts_with("Monitor 2 started"), "{}", b.content);
+
+        stop.execute(&serde_json::json!({ "id": 1 }), Path::new("/")).await;
+
+        let out = list.execute(&serde_json::json!({}), Path::new("/")).await.content;
+        assert!(!out.contains("first") && out.contains("2: second"), "{out}");
+
+        stop.execute(&serde_json::json!({ "id": 2 }), Path::new("/")).await;
+        let out = list.execute(&serde_json::json!({}), Path::new("/")).await.content;
+        assert_eq!(out, "No monitor is running.");
+    }
+
+    #[tokio::test]
+    async fn start_needs_a_command_and_a_description() {
+        let (start, _, _) = tools();
+
+        let out = start
+            .execute(&serde_json::json!({ "command": "true" }), Path::new("/"))
+            .await;
+        assert!(out.is_error);
+    }
+}
