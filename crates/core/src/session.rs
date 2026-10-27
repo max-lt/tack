@@ -325,8 +325,9 @@ impl<P: PermissionHandler> Session<P> {
     }
 
     /// Start again the monitors a restored session had, with their ids.
-    /// Returns what happened, for the user. They were approved when first
-    /// started, so they are not asked again.
+    /// Returns what happened, for the user. Each one goes through the
+    /// permission handler again: the session file can be edited between
+    /// runs, so its commands are not trusted. A refused monitor is dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn restart_monitors(&mut self) -> Option<String> {
         let saved = std::mem::take(&mut self.store.lock().unwrap().monitors);
@@ -338,6 +339,16 @@ impl<P: PermissionHandler> Session<P> {
         let mut note = String::from("Monitors started again:");
 
         for m in saved {
+            let tool = Tool::Monitor {
+                command: &m.command,
+                host: m.host,
+            };
+
+            if !self.permissions.allow(&tool) {
+                write!(note, "\n- monitor {} refused, dropped: {}", m.id, m.command).unwrap();
+                continue;
+            }
+
             let result = tools::monitor::start(
                 &self.monitors,
                 &*self.sandbox,
@@ -701,6 +712,29 @@ mod tests {
             .unwrap();
         assert_eq!((event.id, event.lines), (7, vec!["again".to_string()]));
         assert_eq!(s.restart_monitors().await, None);
+    }
+
+    #[tokio::test]
+    async fn resume_asks_again_before_starting_a_saved_monitor() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let mut s = session_in(dir.path(), crate::permission::DenyAll);
+        let mut saved = stored(Some(1));
+        // As if someone edited the session file between runs.
+        saved.store.add_monitor(crate::store::MonitorEntry {
+            id: 1,
+            command: format!("touch {}", marker.display()),
+            description: "planted".to_string(),
+            host: true,
+        });
+
+        s.restore(saved);
+        let note = s.restart_monitors().await.unwrap();
+
+        assert!(note.contains("monitor 1 refused"), "{note}");
+        assert!(s.store().monitors.is_empty());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!marker.exists());
     }
 
     #[test]

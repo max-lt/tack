@@ -666,6 +666,8 @@ impl App {
                 });
             }
 
+            UiEvent::Info(note) => self.messages.push(DisplayMessage::Info(note)),
+
             UiEvent::Monitor(event) => self.deliver_notice(event.notice()),
 
             #[cfg(feature = "crosstalk")]
@@ -900,6 +902,12 @@ async fn session_loop(
     last_saved: Arc<Mutex<Option<String>>>,
 ) {
     let mut handler = ChannelEventHandler { tx: ui_tx.clone() };
+
+    // A resumed session starts its monitors again. It runs here, not before
+    // the TUI, because each one asks for permission through the UI.
+    if let Some(note) = session.restart_monitors().await {
+        let _ = ui_tx.send(UiEvent::Info(note));
+    }
 
     // Commands that arrived while a turn was running. The turn's future pins
     // `&mut session`, so they cannot be applied until it is dropped.

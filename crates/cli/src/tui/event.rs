@@ -36,6 +36,8 @@ pub enum UiEvent {
         description: String,
         respond: std_mpsc::SyncSender<bool>,
     },
+    /// A note for the user from the session task.
+    Info(String),
     /// Output of a monitor, or its end.
     Monitor(claude_code_core::monitor::MonitorEvent),
     /// Events drained from the crosstalk daemon, as it printed them.
