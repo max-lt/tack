@@ -147,7 +147,7 @@ impl PermissionConfig {
         );
 
         // Check explicit allow rules
-        if !on_host && self.allow.iter().any(|r| rule_matches(r, tool)) {
+        if !on_host && self.allow.iter().any(|r| allow_matches(r, tool)) {
             return Some(true);
         }
 
@@ -192,6 +192,31 @@ impl PermissionConfig {
 // ---------------------------------------------------------------------------
 // Rule parsing and matching
 // ---------------------------------------------------------------------------
+
+/// Characters that make bash run more than one command, or write or read
+/// a file: `;`, `&`, `|`, `$(...)`, backquotes, subshells, redirects and
+/// newlines.
+const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r'];
+
+/// `rule_matches` for an allow rule. A prefix rule such as `Bash(tail:*)`
+/// names one command; it does not cover a command with a shell
+/// metacharacter, such as `tail x; rm -rf ~`. That command is asked.
+fn allow_matches(rule: &str, tool: &Tool<'_>) -> bool {
+    let command = match tool {
+        Tool::Bash { command }
+        | Tool::Monitor { command, .. }
+        | Tool::TerminalOpen { command, .. } => Some(*command),
+        _ => None,
+    };
+
+    let prefix_rule = parse_rule(rule).is_some_and(|(_, pattern)| pattern.ends_with(":*"));
+
+    if prefix_rule && command.is_some_and(|c| c.contains(SHELL_METACHARACTERS)) {
+        return false;
+    }
+
+    rule_matches(rule, tool)
+}
 
 /// Parse a rule string like `Bash(psql:*)` and check if it matches a tool.
 fn rule_matches(rule: &str, tool: &Tool<'_>) -> bool {
@@ -351,6 +376,40 @@ mod tests {
 
         let safe = Tool::Monitor { command: "tail -F log", description: "d", host: false };
         assert_eq!(c.check(&safe, p), Some(true));
+    }
+
+    /// Commands that start like `tail` but run more than tail.
+    const CHAINED: &[&str] = &[
+        "tail x; rm -rf ~",
+        "tail x && rm y",
+        "tail x || rm y",
+        "tail x | sh",
+        "tail x & rm y",
+        "tail $(rm y)",
+        "tail `rm y`",
+        "tail x\nrm y",
+        "tail x > ~/.bashrc",
+        "tail x >> ~/.bashrc",
+        "tail x < /etc/passwd",
+    ];
+
+    #[test]
+    fn a_prefix_allow_rule_does_not_cover_a_chained_command() {
+        let c = config(&["Bash(tail:*)", "Monitor(tail:*)", "TerminalOpen(tail:*)"], &[]);
+        let p = Path::new("/project");
+
+        assert_eq!(c.check(&Tool::Bash { command: "tail -n 5 log" }, p), Some(true));
+
+        for command in CHAINED {
+            let tools = [
+                Tool::Bash { command },
+                Tool::Monitor { command, description: "d", host: false },
+                Tool::TerminalOpen { command, host: false },
+            ];
+            for tool in &tools {
+                assert_eq!(c.check(tool, p), None, "{command:?} was allowed");
+            }
+        }
     }
 
     #[test]

@@ -139,6 +139,7 @@ Create `.claude/settings.local.json` in your project:
 **Require permission:**
 - `Bash` commands (unless explicitly allowed)
 - `TerminalOpen`, `TerminalSend`, `Monitor` — rules: `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
+- A prefix rule such as `Bash(tail:*)` covers one command. It does not cover a command with a shell metacharacter (`;`, `&`, `|`, `$`, a backquote, `(`, `)`, `<`, `>` or a newline), such as `tail x; rm -rf ~` or `tail $HOME/log`: `ccrs` asks. The same applies to `Monitor` and `TerminalOpen`. `Bash(*)` and a rule without `:*` match as written.
 - A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`.
 - No allow rule covers `Monitor` or `TerminalOpen` with `host: true`. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
 - `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine
