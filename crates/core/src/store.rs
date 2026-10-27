@@ -36,6 +36,13 @@ pub struct MonitorEntry {
     pub description: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
+    /// Least time between two events, in seconds. 0: no wait.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub debounce_seconds: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A terminal the model opened and has not closed.

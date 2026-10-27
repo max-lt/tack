@@ -1069,6 +1069,7 @@ mod container_tests {
                 description: "vm ticks",
                 place: Place::Sandbox,
                 id: None,
+                debounce: std::time::Duration::ZERO,
             },
         )
         .await

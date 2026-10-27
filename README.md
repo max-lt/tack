@@ -187,6 +187,8 @@ The `Monitor` tool runs a command in the background. Each line that the command 
 
 Lines that come less than 300 ms apart go into one event. An event stays open for 2 s or less.
 
+`debounce_seconds` (0 to 3600, default 0) sets the least time between two events of a monitor. The lines in between go into the next event, in its limits of lines and bytes. A monitor with a debounce of 6 s or more stays under the limit of 10 events per minute. The session file keeps the value.
+
 Output:
 
 - The model gets the output as quoted data, not as an instruction.

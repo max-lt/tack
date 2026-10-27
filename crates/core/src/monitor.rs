@@ -33,6 +33,8 @@ pub const MAX_EVENT_BYTES: usize = 16 * 1024;
 /// Longest monitor description, in bytes. It goes into every notice of
 /// the monitor.
 pub const MAX_DESCRIPTION: usize = 200;
+/// Longest debounce that a monitor can ask for.
+pub const MAX_DEBOUNCE: Duration = Duration::from_secs(3600);
 /// Most monitors that run at once in one session.
 pub const MAX_MONITORS: usize = 8;
 /// Longest line kept, in bytes.
@@ -85,6 +87,10 @@ pub struct Spec<'a> {
     pub place: Place,
     /// The id of a restored monitor; `None` takes a new one.
     pub id: Option<u32>,
+    /// Least time between two events. The lines in between go into the
+    /// next event, in its limits. Zero: an event goes when the output
+    /// pauses.
+    pub debounce: Duration,
 }
 
 /// Where a monitor runs.
@@ -149,7 +155,9 @@ impl Monitors {
             description,
             place,
             id,
+            debounce,
         } = spec;
+        let debounce = debounce.min(MAX_DEBOUNCE);
 
         if self.registry.is_closed() {
             return Err(exiting());
@@ -211,6 +219,7 @@ impl Monitors {
             command: command.to_string(),
             description: description.to_string(),
             host: place == Place::Host,
+            debounce_seconds: debounce.as_secs(),
         };
         let stop = CancellationToken::new();
 
@@ -266,6 +275,8 @@ impl Monitors {
 
             // When this monitor's recent events were sent, to cap them.
             let mut recent: VecDeque<Duration> = VecDeque::new();
+            // When the last event went, for the debounce.
+            let mut last_sent: Option<tokio::time::Instant> = None;
 
             let ended = 'run: loop {
                 let first = tokio::select! {
@@ -307,17 +318,38 @@ impl Monitors {
                 let mut collected = vec![first];
                 let mut dropped = 0;
 
-                // Collect what follows within the window into one event. A
-                // stop ends the monitor at once; the open batch is dropped.
-                let deadline = tokio::time::Instant::now() + MAX_BATCH;
+                // Collect what follows into one event: until the output
+                // pauses, for MAX_BATCH at most. With a debounce, the event
+                // also waits until `debounce` after the last one, and
+                // collects all along. A stop ends the monitor at once; the
+                // open batch is dropped.
+                let opened = tokio::time::Instant::now();
+                let hold_until = last_sent.map(|sent| sent + debounce).filter(|until| *until > opened);
+                let deadline = (opened + MAX_BATCH).max(hold_until.unwrap_or(opened));
+
                 loop {
-                    let wait = BATCH_WINDOW.min(deadline - tokio::time::Instant::now());
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+
+                    let held = hold_until.filter(|until| now < *until);
+                    let wait = match held {
+                        Some(until) => until - now,
+                        None => BATCH_WINDOW.min(deadline - now),
+                    };
+
                     let line = tokio::select! {
                         () = stop.cancelled() => break 'run None,
                         line = tokio::time::timeout(wait, lines.recv()) => line,
                     };
-                    let Ok(Some(line)) = line else {
-                        break;
+
+                    let line = match line {
+                        Ok(Some(line)) => line,
+                        // The output closed: send what came.
+                        Ok(None) => break,
+                        Err(_) if held.is_some() => continue,
+                        Err(_) => break,
                     };
 
                     if collected.len() < MAX_LINES && size + line.len() <= MAX_EVENT_BYTES {
@@ -343,6 +375,7 @@ impl Monitors {
                 }
 
                 let _ = events.send(batch(collected, dropped, None));
+                last_sent = Some(tokio::time::Instant::now());
 
                 take_wake_up(&mut recent, now, usize::MAX);
 
@@ -646,6 +679,7 @@ mod tests {
                     description: "test",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -680,6 +714,7 @@ mod tests {
                     description: "ticks",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -703,6 +738,7 @@ mod tests {
                     description: "test",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap()
@@ -829,7 +865,8 @@ mod tests {
                         command: "x",
                         description: "x",
                         place: Place::Sandbox,
-                        id: None
+                        id: None,
+                        debounce: Duration::ZERO,
                     }
                 )
                 .is_err()
@@ -875,6 +912,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -900,6 +938,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -935,6 +974,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -957,6 +997,7 @@ mod tests {
                     description: "a",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -969,6 +1010,7 @@ mod tests {
                     description: "b",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -1149,6 +1191,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap_err();
@@ -1247,6 +1290,7 @@ mod tests {
                 description: "x",
                 place: Place::Sandbox,
                 id: None,
+                debounce: Duration::ZERO,
             },
         );
         assert!(result.is_err());
@@ -1272,6 +1316,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap_err();
@@ -1328,6 +1373,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap();
@@ -1406,6 +1452,7 @@ mod tests {
                     description,
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
         };
@@ -1484,6 +1531,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: Some(id),
+                    debounce: Duration::ZERO,
                 },
             )
         };
@@ -1509,6 +1557,7 @@ mod tests {
                     description: "x",
                     place: Place::Sandbox,
                     id: None,
+                    debounce: Duration::ZERO,
                 },
             )
             .unwrap_err();
@@ -1544,6 +1593,70 @@ mod tests {
         // CLOCK_UPTIME_RAW, the clock of Instant, stops in sleep. The window
         // clock is ahead of it by the time the machine slept, never behind.
         assert!(since_boot() >= uptime);
+    }
+
+    #[tokio::test]
+    async fn the_store_keeps_the_debounce_within_its_limit() {
+        let store = SharedStore::default();
+        let (monitors, _rx) = Monitors::new(store.clone());
+
+        for (asked, kept) in [(5, 5), (100_000, MAX_DEBOUNCE.as_secs())] {
+            let id = monitors
+                .start(
+                    host_terminal("sleep 30"),
+                    Path::new("/"),
+                    Spec {
+                        command: "sleep 30",
+                        description: "slow",
+                        place: Place::Sandbox,
+                        id: None,
+                        debounce: Duration::from_secs(asked),
+                    },
+                )
+                .unwrap();
+
+            let entry = store.lock().unwrap().monitors.iter().find(|m| m.id == id).cloned().unwrap();
+            assert_eq!(entry.debounce_seconds, kept);
+        }
+    }
+
+    #[tokio::test]
+    async fn debounce_spaces_the_events_and_keeps_the_lines() {
+        let (monitors, mut rx) = Monitors::new(SharedStore::default());
+        // A line every 0.4 s, over the 300 ms window: with no debounce,
+        // each line is an event of its own.
+        let cmd = "for i in $(seq 1 8); do echo line$i; sleep 0.4; done";
+        monitors
+            .start(
+                host_terminal(cmd),
+                Path::new("/"),
+                Spec {
+                    command: cmd,
+                    description: "chatty",
+                    place: Place::Sandbox,
+                    id: None,
+                    debounce: Duration::from_secs(1),
+                },
+            )
+            .unwrap();
+
+        let mut times = Vec::new();
+        let mut lines = Vec::new();
+        let start = tokio::time::Instant::now();
+        loop {
+            let event = next(&mut rx).await;
+            if event.ended.is_some() {
+                break;
+            }
+            times.push(start.elapsed());
+            lines.extend(event.lines);
+        }
+
+        for pair in times.windows(2) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(950), "{times:?}");
+        }
+        assert!(times.len() >= 2, "{times:?}");
+        assert_eq!(lines.len(), 8, "a line was lost: {lines:?}");
     }
 
     #[test]

@@ -75,6 +75,10 @@ impl ToolDef for MonitorTool {
                 "host": {
                     "type": "boolean",
                     "description": "Run on the user's machine, outside the sandbox (default false)"
+                },
+                "debounce_seconds": {
+                    "type": "integer",
+                    "description": "Least seconds between two wake-ups (default 0, max 3600). The lines in between come together in the next one. Use it for a command that prints often."
                 }
             },
             "required": ["command", "description"]
@@ -96,6 +100,12 @@ impl ToolDef for MonitorTool {
             description,
             place: if host { Place::Host } else { Place::Sandbox },
             id: None,
+            debounce: std::time::Duration::from_secs(
+                input
+                    .get("debounce_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ),
         };
 
         match start(&self.monitors, &*self.sandbox, cwd, spec).await {
