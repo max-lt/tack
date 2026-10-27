@@ -88,6 +88,7 @@ impl ToolDef for FetchTool {
             .unwrap_or(1_048_576) as usize;
 
         let mut request = Request::new(method.clone(), url, TIMEOUT);
+        request.redirects = crate::http::Redirects::Follow;
 
         // Default User-Agent mimics Firefox to avoid bot-blocking
         request.headers.insert(
