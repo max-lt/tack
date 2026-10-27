@@ -639,6 +639,47 @@ mod tests {
         assert_eq!(unique.len(), ids.len());
     }
 
+    fn tmp_files(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_rename_removes_the_temporary_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A directory in the place of the file makes the rename fail.
+        fs::create_dir(tmp.path().join("1.json")).unwrap();
+
+        assert!(save_in(tmp.path(), &stored("1", "/p", 1, "x")).is_err());
+        assert!(tmp_files(tmp.path()).is_empty());
+    }
+
+    /// Needs a small empty volume: CCRS_FULL_DISK_DIR names a directory on
+    /// it. The test saves a session, fills the volume, then saves again.
+    #[test]
+    #[ignore]
+    fn a_save_on_a_full_disk_keeps_the_old_file() {
+        use std::io::Write;
+
+        let dir = PathBuf::from(std::env::var("CCRS_FULL_DISK_DIR").unwrap());
+        save_in(&dir, &stored("1", "/p", 1, "before")).unwrap();
+        let before = fs::read(dir.join("1.json")).unwrap();
+
+        let mut filler = fs::File::create(dir.join("filler")).unwrap();
+        while filler.write_all(&[0; 4096]).is_ok() {}
+        drop(filler);
+
+        let err = save_in(&dir, &stored("1", "/p", 2, &"x".repeat(2_000_000))).unwrap_err();
+
+        assert!(format!("{err:#}").contains("No space left"), "{err:#}");
+        assert_eq!(fs::read(dir.join("1.json")).unwrap(), before);
+        assert!(tmp_files(&dir).is_empty(), "{:?}", tmp_files(&dir));
+        assert!(load_from(&dir, "1").is_ok());
+    }
+
     #[test]
     fn list_filters_by_cwd_and_sorts_recent_first() {
         let tmp = tempfile::tempdir().unwrap();
