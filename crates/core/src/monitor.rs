@@ -88,7 +88,7 @@ pub struct Monitors {
     store: SharedStore,
     registry: &'static Registry,
     /// When the session's monitors last woke the model.
-    wake_ups: Arc<Mutex<VecDeque<tokio::time::Instant>>>,
+    wake_ups: Arc<Mutex<VecDeque<Duration>>>,
 }
 
 impl Monitors {
@@ -242,7 +242,7 @@ impl Monitors {
             };
 
             // When this monitor's recent events were sent, to cap them.
-            let mut recent: VecDeque<tokio::time::Instant> = VecDeque::new();
+            let mut recent: VecDeque<Duration> = VecDeque::new();
 
             let ended = 'run: loop {
                 let first = tokio::select! {
@@ -305,7 +305,7 @@ impl Monitors {
                     }
                 }
 
-                let now = tokio::time::Instant::now();
+                let now = since_boot();
 
                 if !take_wake_up(
                     &mut wake_ups.lock().unwrap(),
@@ -428,16 +428,32 @@ pub fn escape(text: &str) -> String {
     out
 }
 
+/// Time since boot, sleep included. `Instant` on macOS stops while the
+/// machine sleeps, so after a sleep old wake-ups would look recent.
+fn since_boot() -> Duration {
+    #[cfg(target_os = "macos")]
+    let clock = libc::CLOCK_MONOTONIC;
+    #[cfg(not(target_os = "macos"))]
+    let clock = libc::CLOCK_BOOTTIME;
+
+    // SAFETY: an all-zero timespec is valid, and clock_gettime only writes
+    // into it.
+    let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid clock id and a pointer to a local value.
+    unsafe { libc::clock_gettime(clock, &mut now) };
+
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap_or(0),
+        u32::try_from(now.tv_nsec).unwrap_or(0),
+    )
+}
+
 /// Count a wake-up at `now` in a sliding minute. `false`, and nothing
 /// counted, when `max` are already in it.
-fn take_wake_up(
-    window: &mut VecDeque<tokio::time::Instant>,
-    now: tokio::time::Instant,
-    max: usize,
-) -> bool {
+fn take_wake_up(window: &mut VecDeque<Duration>, now: Duration, max: usize) -> bool {
     while window
         .front()
-        .is_some_and(|&t| now.duration_since(t) >= Duration::from_secs(60))
+        .is_some_and(|&t| now.saturating_sub(t) >= Duration::from_secs(60))
     {
         window.pop_front();
     }
@@ -1321,6 +1337,33 @@ mod tests {
             .start(host_terminal("sleep 30"), Path::new("/"), "sleep 30", "x", false, None)
             .unwrap_err();
         assert!(err.to_string().contains("no monitor id left"), "{err}");
+    }
+
+    #[test]
+    fn the_window_lets_a_wake_up_through_after_an_hour() {
+        let mut window = VecDeque::new();
+        let start = Duration::from_secs(1000);
+
+        for i in 0..MAX_EVENTS_PER_MINUTE - 1 {
+            assert!(take_wake_up(&mut window, start + Duration::from_secs(i as u64), MAX_EVENTS_PER_MINUTE));
+        }
+
+        let hour_later = start + Duration::from_secs(3600);
+        assert!(take_wake_up(&mut window, hour_later, MAX_EVENTS_PER_MINUTE));
+        assert_eq!(window.len(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_window_clock_counts_sleep() {
+        // SAFETY: as in since_boot.
+        let mut raw: libc::timespec = unsafe { std::mem::zeroed() };
+        unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut raw) };
+        let uptime = Duration::new(raw.tv_sec as u64, raw.tv_nsec as u32);
+
+        // CLOCK_UPTIME_RAW, the clock of Instant, stops in sleep. The window
+        // clock is ahead of it by the time the machine slept, never behind.
+        assert!(since_boot() >= uptime);
     }
 
     #[test]
