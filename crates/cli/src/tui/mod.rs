@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
@@ -31,12 +31,22 @@ use claude_code_core::permission::PermissionHandler;
 
 pub use event::{ChannelEventHandler, SessionCmd, UiEvent};
 
-/// Set while the TUI owns the terminal: raw mode and alternate screen.
-/// Only then must an exit restore the terminal.
+/// Set while the TUI owns the terminal: raw mode, alternate screen, mouse
+/// capture. Only then must an exit restore the terminal.
 pub static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Lines that PageUp and PageDown scroll.
 const PAGE_LINES: u16 = 10;
+
+/// DECSET 1007: in the alternate screen, the terminal sends the wheel as
+/// arrow keys. The terminal keeps the mouse, so text selection works.
+pub(crate) struct AlternateScroll(pub(crate) bool);
+
+impl crossterm::Command for AlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str(if self.0 { "\x1b[?1007h" } else { "\x1b[?1007l" })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Display model
@@ -170,6 +180,9 @@ pub struct App {
     pub messages: Vec<DisplayMessage>,
     pub scroll: u16,
     pub auto_scroll: bool,
+    /// The wheel scrolls the conversation. F2 turns it off so that the
+    /// terminal can select text.
+    pub mouse_capture: bool,
     pub max_scroll: u16,
     pub input: String,
     pub cursor: usize,
@@ -241,6 +254,7 @@ impl App {
             messages,
             scroll: 0,
             auto_scroll: true,
+            mouse_capture: true,
             max_scroll: 0,
             input: String::new(),
             cursor: 0,
@@ -434,15 +448,17 @@ impl App {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.chars().count(),
 
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Up => {
                 self.scroll = self.scroll.saturating_sub(1);
                 self.auto_scroll = false;
             }
 
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.scroll = self.scroll.saturating_add(1);
-                self.auto_scroll = true; // re-enable when scrolling down
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_add(1).min(self.max_scroll);
+                self.auto_scroll = self.scroll >= self.max_scroll;
             }
+
+            KeyCode::F(2) => self.mouse_capture = !self.mouse_capture,
 
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(PAGE_LINES);
@@ -1125,7 +1141,10 @@ pub fn run(
     crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
+        AlternateScroll(true),
+        crossterm::event::EnableMouseCapture,
     )?;
+    let mut captured = true;
 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -1137,6 +1156,8 @@ pub fn run(
         let mut stdout = std::io::stdout();
         let _ = crossterm::execute!(
             stdout,
+            crossterm::event::DisableMouseCapture,
+            AlternateScroll(false),
             crossterm::terminal::LeaveAlternateScreen,
         );
         let _ = crossterm::terminal::disable_raw_mode();
@@ -1182,7 +1203,9 @@ pub fn run(
             crossterm::execute!(
                 std::io::stdout(),
                 crossterm::terminal::EnterAlternateScreen,
+                AlternateScroll(true),
             )?;
+            captured = false;
             let backend = CrosstermBackend::new(std::io::stdout());
             terminal = Terminal::new(backend)?;
             terminal.clear()?;
@@ -1228,11 +1251,31 @@ pub fn run(
                         break;
                     }
                 }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.scroll = app.scroll.saturating_sub(3);
+                        app.auto_scroll = false;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.scroll = app.scroll.saturating_add(3).min(app.max_scroll);
+                        app.auto_scroll = app.scroll >= app.max_scroll;
+                    }
+                    _ => {}
+                },
                 Event::Resize(_, _) => {
                     // Force full redraw after resize
                     terminal.clear()?;
                 }
                 _ => {}
+            }
+        }
+
+        if app.mouse_capture != captured {
+            captured = app.mouse_capture;
+            if captured {
+                crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+            } else {
+                crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
             }
         }
 
@@ -1252,6 +1295,8 @@ pub fn run(
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
+        crossterm::event::DisableMouseCapture,
+        AlternateScroll(false),
         crossterm::terminal::LeaveAlternateScreen,
     )?;
 
@@ -1319,6 +1364,41 @@ mod tests {
 
         app.scroll = 95;
         app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 100);
+        assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn f2_toggles_the_mouse_capture() {
+        let (mut app, _rx) = busy_app();
+        assert!(app.mouse_capture);
+        let f2 = crossterm::event::KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE);
+
+        app.handle_key(f2);
+        assert!(!app.mouse_capture);
+        app.handle_key(f2);
+        assert!(app.mouse_capture);
+    }
+
+    // With alternate scroll, the terminal sends the wheel as arrow keys.
+    #[test]
+    fn arrow_keys_scroll_the_conversation() {
+        let (mut app, _rx) = busy_app();
+        app.max_scroll = 100;
+        app.scroll = 50;
+        app.auto_scroll = true;
+        let key = |code| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 49);
+        assert!(!app.auto_scroll);
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.scroll, 50);
+        assert!(!app.auto_scroll, "not at the bottom yet");
+
+        app.scroll = 100;
+        app.handle_key(key(KeyCode::Down));
         assert_eq!(app.scroll, 100);
         assert!(app.auto_scroll);
     }

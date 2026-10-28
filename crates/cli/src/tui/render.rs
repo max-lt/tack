@@ -151,6 +151,13 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         bar.push(Span::raw(format!("mem {}", format_bytes(bytes))));
     }
 
+    bar.push(Span::raw(" │ "));
+    bar.push(Span::raw(if app.mouse_capture {
+        "F2: select text"
+    } else {
+        "F2: wheel scroll"
+    }));
+
     let bar = Line::from(bar);
 
     let widget = Paragraph::new(bar).style(Style::new().bg(Color::DarkGray).fg(Color::White));
