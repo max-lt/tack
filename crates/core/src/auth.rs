@@ -18,7 +18,7 @@ struct PkceChallenge {
     state: String,
 }
 
-/// S256 code challenge for a PKCE verifier (RFC 7636 §4.2).
+/// S256 code challenge for a PKCE verifier (RFC 7636 section 4.2).
 fn pkce_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(digest)
@@ -27,15 +27,15 @@ fn pkce_challenge(verifier: &str) -> String {
 fn generate_pkce() -> PkceChallenge {
     let mut rng = rand::rng();
 
-    // Verifier: 32 random bytes → base64url (matches reference)
+    // Verifier: 32 random bytes -> base64url (matches reference)
     let mut verifier_bytes = [0u8; 32];
     rng.fill(&mut verifier_bytes);
     let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
-    // Challenge: SHA-256 of verifier → base64url
+    // Challenge: SHA-256 of verifier -> base64url
     let challenge = pkce_challenge(&verifier);
 
-    // State: 16 random bytes → hex (reference uses .toString('hex'))
+    // State: 16 random bytes -> hex (reference uses .toString('hex'))
     let mut state_bytes = [0u8; 16];
     rng.fill(&mut state_bytes);
     let state = hex::encode(state_bytes);
@@ -97,9 +97,9 @@ pub fn start_oauth() -> Result<OAuthSession> {
 /// Extract the authorization code from a callback URL and verify the state.
 ///
 /// Accepts three formats:
-/// - Full URL: `https://…?code=…&state=…`
-/// - Code#state: `dn0Qsk…#530389…` (as shown on the callback page)
-/// - Bare code: `dn0Qsk…`
+/// - Full URL: `https://...?code=...&state=...`
+/// - Code#state: `dn0Qsk...#530389...` (as shown on the callback page)
+/// - Bare code: `dn0Qsk...`
 pub fn parse_callback(session: &OAuthSession, input: &str) -> Result<String> {
     if input.starts_with("http") {
         let url = Url::parse(input).context("Invalid callback URL")?;
@@ -117,14 +117,14 @@ pub fn parse_callback(session: &OAuthSession, input: &str) -> Result<String> {
             .unwrap_or_default();
 
         if returned_state != session.state {
-            anyhow::bail!("State mismatch — possible CSRF. Please restart.");
+            anyhow::bail!("State mismatch: possible CSRF. Please restart.");
         }
 
         Ok(code)
     } else if let Some((code, returned_state)) = input.split_once('#') {
         // The callback page displays "code#state"
         if returned_state != session.state {
-            anyhow::bail!("State mismatch — possible CSRF. Please restart.");
+            anyhow::bail!("State mismatch: possible CSRF. Please restart.");
         }
 
         Ok(code.to_string())

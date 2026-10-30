@@ -143,9 +143,9 @@ impl Mergeable for Settings {
 
 /// Load settings by merging three layers (rules from all files are combined):
 ///
-/// 1. `~/.claude/settings.json` — global user settings
-/// 2. `{project_dir}/.claude/settings.json` — project settings (committed)
-/// 3. `{project_dir}/.claude/settings.local.json` — local overrides (gitignored)
+/// 1. `~/.claude/settings.json`: global user settings
+/// 2. `{project_dir}/.claude/settings.json`: project settings (committed)
+/// 3. `{project_dir}/.claude/settings.local.json`: local overrides (gitignored)
 pub fn load_settings(project_dir: &Path) -> Settings {
     let claude_dir = project_dir.join(".claude");
 
@@ -234,7 +234,7 @@ mod tests {
     use crate::permission::Tool;
 
     // -----------------------------------------------------------------------
-    // Mergeable — PermissionConfig
+    // Mergeable: PermissionConfig
     // -----------------------------------------------------------------------
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
 
         let merged = a.merge(b);
 
-        // Duplicates are kept — harmless, and avoids the cost of dedup.
+        // Duplicates are kept: harmless, and avoids the cost of dedup.
         assert_eq!(merged.allow.len(), 2);
     }
 
@@ -336,7 +336,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Mergeable — Settings (delegates to PermissionConfig)
+    // Mergeable: Settings (delegates to PermissionConfig)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Three-way merge (the real scenario: global → project → local)
+    // Three-way merge (the real scenario: global -> project -> local)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // load_settings — filesystem integration tests
+    // load_settings: filesystem integration tests
     // -----------------------------------------------------------------------
 
     /// Helper: build paths for project + local settings inside a temp dir.
@@ -699,7 +699,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Full integration: load from disk → merged config → permission checks
+    // Full integration: load from disk -> merged config -> permission checks
     // -----------------------------------------------------------------------
 
     #[test]
@@ -812,7 +812,7 @@ mod tests {
             Some(true)
         );
 
-        // No matching rule → should prompt (None)
+        // No matching rule -> should prompt (None)
         assert_eq!(
             settings.permissions.check(
                 &Tool::Bash {
@@ -823,7 +823,7 @@ mod tests {
             None
         );
 
-        // File in additional directory → allowed
+        // File in additional directory -> allowed
         assert_eq!(
             settings.permissions.check(
                 &Tool::Read {
@@ -836,7 +836,7 @@ mod tests {
             Some(true)
         );
 
-        // File in project dir → allowed
+        // File in project dir -> allowed
         let project_file = tmp.path().join("src/lib.rs");
         assert_eq!(
             settings.permissions.check(
@@ -848,7 +848,7 @@ mod tests {
             Some(true)
         );
 
-        // File outside all allowed dirs → should prompt
+        // File outside all allowed dirs -> should prompt
         assert_eq!(
             settings.permissions.check(
                 &Tool::Read {

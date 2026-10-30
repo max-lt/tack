@@ -444,7 +444,7 @@ fn parse_rule(rule: &str) -> Option<(&str, &str)> {
 ///
 /// - `*` matches everything.
 /// - `prefix:*` matches if `value` equals `prefix` or starts with `prefix `
-///   (prefix followed by a space — i.e. the prefix is the command/path start).
+///   (prefix followed by a space, i.e. the prefix is the command/path start).
 /// - Anything else is an exact match.
 fn pattern_matches(value: &str, pattern: &str) -> bool {
     if pattern == "*" {

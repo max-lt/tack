@@ -68,7 +68,7 @@ pub fn log(path: &Path, limit: usize) -> Result<Vec<LogEntry>> {
     Ok(entries)
 }
 
-/// Basic epoch → "YYYY-MM-DD HH:MM" formatter (UTC, no chrono dependency).
+/// Basic epoch -> "YYYY-MM-DD HH:MM" formatter (UTC, no chrono dependency).
 pub fn format_epoch(epoch: i64) -> String {
     // We avoid pulling chrono just for this. Rough UTC conversion.
     let secs_per_min = 60;
@@ -86,7 +86,7 @@ pub fn format_epoch(epoch: i64) -> String {
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
-/// Convert days since epoch to (year, month, day) — civil calendar, UTC.
+/// Convert days since epoch to (year, month, day): civil calendar, UTC.
 fn days_to_ymd(mut days: i64) -> (i64, i64, i64) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     days += 719468;

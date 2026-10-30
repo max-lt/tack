@@ -61,7 +61,7 @@ fn list_models(current_model: &str) -> String {
         };
 
         text.push_str(&format!(
-            "  {id} — {label}{default}{marker}\n",
+            "  {id}: {label}{default}{marker}\n",
             id = model.id,
             label = model.label,
         ));

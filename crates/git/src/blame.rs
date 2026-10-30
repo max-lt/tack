@@ -15,7 +15,7 @@ pub struct BlameLine {
     pub content: String,
 }
 
-/// Blame a file — show who last modified each line (like `git blame`).
+/// Blame a file: show who last modified each line (like `git blame`).
 ///
 /// `file_path` is relative to the repo root.
 pub fn blame(repo_path: &Path, file_path: &str) -> Result<Vec<BlameLine>> {

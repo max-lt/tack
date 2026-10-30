@@ -11,7 +11,7 @@ impl ToolDef for GitTool {
 
     fn description(&self) -> &'static str {
         "Git operations via libgit2: status, diff, log, show, blame, branch, add, commit, push, reset, checkout. \
-         Does not shell out to git — works directly with the repository."
+         Does not shell out to git: works directly with the repository."
     }
 
     fn input_schema(&self) -> serde_json::Value {

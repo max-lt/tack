@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn lm_studio_ids_route_by_marker_not_by_name() {
-        // A bare `qwen…` id would go to Cerebras; the marker wins.
+        // A bare `qwen...` id would go to Cerebras; the marker wins.
         let id = lm_studio_model_id("qwen3.8-27b-obliterated");
         assert_eq!(Provider::for_model(&id), Provider::LmStudio);
         assert_eq!(Provider::for_model("qwen3.8-27b-obliterated"), Provider::Cerebras);

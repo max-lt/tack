@@ -58,7 +58,7 @@ mod tests {
 
         let merged = rrf_merge(&bm25, &semantic, 10);
 
-        // a.rs and b.rs appear in both → should have highest scores
+        // a.rs and b.rs appear in both -> should have highest scores
         assert!(merged.len() >= 2);
         let top_paths: Vec<&str> = merged.iter().take(2).map(|(p, _)| p.as_str()).collect();
         assert!(top_paths.contains(&"a.rs"));

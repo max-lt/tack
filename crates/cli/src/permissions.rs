@@ -77,7 +77,7 @@ impl PermissionHandler for ChannelPermissions {
             respond: tx,
         });
 
-        // Block until the UI responds — safe because this runs in a spawned
+        // Block until the UI responds: safe because this runs in a spawned
         // tokio task, blocking only one worker thread.
         rx.recv().unwrap_or(false)
     }

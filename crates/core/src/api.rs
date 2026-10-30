@@ -375,7 +375,7 @@ impl ApiClient {
             "messages": messages,
         });
 
-        // Prompt caching. The prompt is ordered tools → system → messages, and
+        // Prompt caching. The prompt is ordered tools -> system -> messages, and
         // a breakpoint caches everything before it. The system breakpoint
         // covers tools + system; the message breakpoints cover the history.
         if let Some(prompt) = system_prompt {

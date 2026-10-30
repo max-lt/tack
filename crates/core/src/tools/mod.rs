@@ -63,7 +63,7 @@ impl ToolOutput {
 }
 
 // ---------------------------------------------------------------------------
-// ToolDef — the user-facing trait (uses async fn directly)
+// ToolDef: the user-facing trait (uses async fn directly)
 // ---------------------------------------------------------------------------
 
 pub trait ToolDef: Send + Sync {
@@ -78,7 +78,7 @@ pub trait ToolDef: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// ToolDefDyn — object-safe wrapper for dyn dispatch
+// ToolDefDyn: object-safe wrapper for dyn dispatch
 // ---------------------------------------------------------------------------
 
 pub trait ToolDefDyn: Send + Sync {

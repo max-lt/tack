@@ -67,7 +67,7 @@ impl ToolDef for SearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query — works with both exact terms and conceptual/semantic queries"
+                    "description": "The search query: works with both exact terms and conceptual/semantic queries"
                 },
                 "limit": {
                     "type": "integer",

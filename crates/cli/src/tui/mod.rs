@@ -1118,7 +1118,7 @@ pub fn run(
     }
     let app_ui_tx = ui_tx.clone();
 
-    // Channel for UI → session commands
+    // Channel for UI -> session commands
     let (session_tx, session_rx) = mpsc::unbounded_channel();
 
     // Id of the last session written to disk, read back on exit for the

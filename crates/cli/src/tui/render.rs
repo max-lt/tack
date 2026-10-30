@@ -392,7 +392,7 @@ fn render_suggestions(
         }
 
         spans.push(Span::styled(
-            format!("  — {desc}"),
+            format!("  - {desc}"),
             Style::new().fg(Color::Gray),
         ));
 

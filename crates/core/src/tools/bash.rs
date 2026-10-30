@@ -23,7 +23,7 @@ impl ToolDef for BashTool {
 
     fn description(&self) -> &'static str {
         "Executes a bash command. Use for running programs, installing packages, git operations, \
-         builds, and other terminal tasks. Do NOT use for reading or writing files — use the \
+         builds, and other terminal tasks. Do NOT use for reading or writing files: use the \
          Read and Write tools instead."
     }
 

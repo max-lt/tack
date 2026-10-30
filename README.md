@@ -4,26 +4,26 @@ A lightweight coding agent harness for the terminal, in Rust.
 
 ## Why?
 
-`tack` is designed for performance and efficiency. While the official Claude Code CLI is a powerful tool, it requires approximately 175 MB of disk space and 500 MB – 3 GB+ of RAM during operation due to its Node.js/Bun architecture.
+`tack` is designed for performance and efficiency. While the official Claude Code CLI is a powerful tool, it requires approximately 175 MB of disk space and 500 MB to 3 GB+ of RAM during operation due to its Node.js/Bun architecture.
 
 `tack` provides the same functionality in a **~23 MB** binary using **~10 MB RAM**, making it ideal for resource-constrained environments or users who prefer minimal overhead.
 
 ## Features
 
-- **Full tool suite** — Bash, Git, Read, Write, Edit, Glob, Grep, Search
-- **Terminals** — `TerminalOpen`, `TerminalSend`, `TerminalRead`, `TerminalClose` for programs that need a TTY
-- **Monitors** — `Monitor` runs a command in the background, and its output wakes the model (see [Monitors](#monitors))
-- **Sandbox** — `--sandbox <IMAGE>` runs commands in an offline Linux VM (Apple `container`, macOS 26 or later)
-- **Crosstalk** — with `--features crosstalk`, talk to the agents of other people through a `crosstalk` daemon
-- **Agentic loop** — tool_use → permission check → execute → send result → continue
-- **Interactive permissions** — colored prompts with rule-based auto-allow
-- **Smart Git integration** — read-only commands (status, log, diff) auto-approved, write operations require permission
-- **Settings compatibility** — reads `.claude/settings.json` and `.claude/settings.local.json` (same format as Claude Code)
-- **Two providers** — Anthropic, and Cerebras for open-weights models
-- **OAuth PKCE** — same auth flow as the official CLI, with refresh token rotation
+- **Full tool suite**: Bash, Git, Read, Write, Edit, Glob, Grep, Search
+- **Terminals**: `TerminalOpen`, `TerminalSend`, `TerminalRead`, `TerminalClose` for programs that need a TTY
+- **Monitors**: `Monitor` runs a command in the background, and its output wakes the model (see [Monitors](#monitors))
+- **Sandbox**: `--sandbox <IMAGE>` runs commands in an offline Linux VM (Apple `container`, macOS 26 or later)
+- **Crosstalk**: with `--features crosstalk`, talk to the agents of other people through a `crosstalk` daemon
+- **Agentic loop**: tool_use -> permission check -> execute -> send result -> continue
+- **Interactive permissions**: colored prompts with rule-based auto-allow
+- **Smart Git integration**: read-only commands (status, log, diff) auto-approved, write operations require permission
+- **Settings compatibility**: reads `.claude/settings.json` and `.claude/settings.local.json` (same format as Claude Code)
+- **Two providers**: Anthropic, and Cerebras for open-weights models
+- **OAuth PKCE**: same auth flow as the official CLI, with refresh token rotation
 - **API key authentication**
 - **Streaming responses** via SSE
-- **Slash commands** — `/help`, `/quit`, `/clear`, `/model`
+- **Slash commands**: `/help`, `/quit`, `/clear`, `/model`
 
 ## Install
 
@@ -64,7 +64,7 @@ echo "And the commit before it?" | tack -p --session review
 | `/help` | `/h` | Show available commands |
 | `/quit` | `/q` `/exit` | Exit |
 | `/clear` | | Clear conversation history |
-| `/model` | | Pick a model with ↑/↓, Enter to confirm, Esc to cancel |
+| `/model` | | Pick a model with Up/Down, Enter to confirm, Esc to cancel |
 | `/model <name>` | | Switch model (e.g. `/model opus`) |
 | `/rec` | | Record and transcribe voice input (requires `MISTRAL_API_KEY`) |
 
@@ -131,31 +131,31 @@ Create `.claude/settings.local.json` in your project:
 ```
 
 **Auto-approved tools:**
-- `Glob`, `Grep`, `Search`, `List` — always allowed
-- `TerminalRead`, `TerminalClose`, `MonitorList`, `MonitorStop`, `CrosstalkWhoami`, `CrosstalkPeers` — always allowed
-- `Read`, `Write`, `Edit` — auto-allowed in project directory. The check resolves `..` and symbolic links first, so a path that leads out of the project asks. Known limit: a link that changes between the check and the write is not covered.
-- `Git status`, `Git log`, `Git diff`, `Git show`, `Git blame`, `Git branch` — read-only git commands
+- `Glob`, `Grep`, `Search`, `List`: always allowed
+- `TerminalRead`, `TerminalClose`, `MonitorList`, `MonitorStop`, `CrosstalkWhoami`, `CrosstalkPeers`: always allowed
+- `Read`, `Write`, `Edit`: auto-allowed in project directory. The check resolves `..` and symbolic links first, so a path that leads out of the project asks. Known limit: a link that changes between the check and the write is not covered.
+- `Git status`, `Git log`, `Git diff`, `Git show`, `Git blame`, `Git branch`: read-only git commands
 
 **Require permission:**
 - `Bash` commands (unless explicitly allowed)
-- `TerminalOpen`, `TerminalSend`, `Monitor` — rules: `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
+- `TerminalOpen`, `TerminalSend`, `Monitor`: allowed by rules such as `TerminalOpen(cmd:*)`, `TerminalSend(...)`, `Monitor(cmd:*)`
 - A prefix rule such as `Bash(tail:*)` covers one command. It does not cover a command with a shell metacharacter (`;`, `&`, `|`, `$`, a backquote, `(`, `)`, `<`, `>` or a newline), such as `tail x; rm -rf ~` or `tail $HOME/log`: `tack` asks. The same applies to `Monitor` and `TerminalOpen`. `Bash(*)` and a rule without `:*` match as written.
 - `TerminalSend` text runs as shell lines. A prefix rule such as `TerminalSend(ls:*)` checks each line between `<Enter>` keys and line breaks, like a `Bash` command. Another key token, such as `<Up>`, `<Tab>`, `<C-m>` or an unknown one, makes `tack` ask: the shell can then run a line that is not the text. A deny rule checks each part between keys and line breaks, against `TerminalSend` and `Bash` rules. The check and the terminal read the input with one parser: a `<...>` that is not a key name is text, as the terminal types it. A deny rule cannot rebuild a line that edit keys change, such as `m x<C-a>r<Enter>`; without `--auto`, such input asks.
 - A `Bash(...)` deny rule also denies that command in `Monitor` and `TerminalOpen`. A deny rule checks each command of a chain: `Bash(rm:*)` denies `ls; rm x`, `tail $(rm y)`, `FOO=1 rm x` and `X="a b" rm x`. It skips the reserved words and wrappers in front of a command (`if`, `then`, `else`, `elif`, `do`, `while`, `until`, `!`, `{`, `time`, `command`, `builtin`, `exec`) and a backslash in front of the command word (`\rm`).
 - A deny rule is a guard, not a sandbox. It matches the start of a command, so `sudo rm`, `/bin/rm`, `env rm`, `nohup rm`, `bash -c "rm x"`, `eval "rm x"`, `xargs rm` or `find -delete` do not match `Bash(rm:*)`. To contain commands, use `--sandbox`.
 - No allow rule covers `Monitor` or `TerminalOpen` with `host: true`, or `TerminalSend` into a terminal that runs on the host. A run on the host always asks, except with `--auto` or `--dangerously-skip-permissions`.
-- `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget` — the data leaves the machine. An allow rule must name the action and the peer, such as `Crosstalk(send crosstalk_<id>)`; `Crosstalk(*)` or `Crosstalk(send:*)` allow nothing. Deny rules can use wildcards. The prompt shows the peer and the whole text, escaped.
-- `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc. — write operations
+- `CrosstalkSend`, `CrosstalkConnect`, `CrosstalkForget`: the data leaves the machine. An allow rule must name the action and the peer, such as `Crosstalk(send crosstalk_<id>)`; `Crosstalk(*)` or `Crosstalk(send:*)` allow nothing. Deny rules can use wildcards. The prompt shows the peer and the whole text, escaped.
+- `Git commit`, `Git push`, `Git reset`, `Git checkout`, `Git add`, etc.: write operations
 
 Three layers, merged in order:
 
-1. `~/.claude/settings.json` — global
-2. `.claude/settings.json` — project (committed)
-3. `.claude/settings.local.json` — local (gitignored)
+1. `~/.claude/settings.json`: global
+2. `.claude/settings.json`: project (committed)
+3. `.claude/settings.local.json`: local (gitignored)
 
 **Flags:**
-- `--auto` — approve tools without prompting. `deny` rules still apply.
-- `--dangerously-skip-permissions` — approve **every** tool call, ignoring all rules including `deny`. Use only in a sandbox (container, VM).
+- `--auto`: approve tools without prompting. `deny` rules still apply.
+- `--dangerously-skip-permissions`: approve **every** tool call, ignoring all rules including `deny`. Use only in a sandbox (container, VM).
 
 ### Terminals
 

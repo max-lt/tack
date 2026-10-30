@@ -1,4 +1,4 @@
-//! Git operations via libgit2 — no CLI dependency.
+//! Git operations via libgit2: no CLI dependency.
 
 mod blame;
 mod diff;

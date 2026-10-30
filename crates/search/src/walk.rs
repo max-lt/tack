@@ -260,7 +260,7 @@ impl FileWalker {
                 continue;
             }
 
-            // Added or modified — read content
+            // Added or modified: read content
             let content = match std::fs::read(path) {
                 Ok(c) => c,
                 Err(_) => continue,

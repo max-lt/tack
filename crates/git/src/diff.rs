@@ -69,7 +69,7 @@ pub fn diff_range(path: &Path, from: &str, to: &str) -> Result<(Vec<DiffEntry>, 
     collect_diff(&diff)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────
+// Helpers
 
 fn diff_opts() -> DiffOptions {
     let mut opts = DiffOptions::new();
