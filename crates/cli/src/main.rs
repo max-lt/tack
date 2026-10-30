@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
     let quiet = cli.print.is_some();
 
     if !quiet {
-        eprintln!("tack v0.1.0\n");
+        eprintln!("tack v{}\n", env!("CARGO_PKG_VERSION"));
     }
 
     // An exported key wins over saved credentials, as with `claude`.

@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "tack-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4150,7 +4150,7 @@ dependencies = [
 
 [[package]]
 name = "tack-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4184,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "tack-git"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "git2",
@@ -4195,7 +4195,7 @@ dependencies = [
 
 [[package]]
 name = "tack-search"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -4208,7 +4208,7 @@ dependencies = [
 
 [[package]]
 name = "tack-utils"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "tantivy"
