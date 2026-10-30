@@ -3,12 +3,8 @@ mod clear;
 mod help;
 mod model;
 mod quit;
-#[cfg(feature = "voice")]
-pub mod rec;
 
-#[allow(dead_code)]
 pub enum CommandResult {
-    Continue,
     Exit,
     Clear,
     SetModel {
@@ -18,10 +14,6 @@ pub enum CommandResult {
     /// Open the interactive model picker.
     PickModel,
     Info(String),
-    #[cfg(feature = "voice")]
-    SendMessage(String),
-    #[cfg(feature = "voice")]
-    RecordVoice,
     /// Run a crosstalk daemon command: the words after `/crosstalk`.
     #[cfg(feature = "crosstalk")]
     Crosstalk(Vec<String>),
@@ -36,6 +28,7 @@ pub struct CommandDef {
 
 /// Returns all available slash commands.
 pub fn available_commands() -> Vec<CommandDef> {
+    #[allow(unused_mut)]
     let mut cmds = vec![
         CommandDef {
             name: "/help",
@@ -58,13 +51,6 @@ pub fn available_commands() -> Vec<CommandDef> {
             description: "Pick a model (or /model <name>)",
         },
     ];
-
-    #[cfg(feature = "voice")]
-    cmds.push(CommandDef {
-        name: "/rec",
-        aliases: &[],
-        description: "Record and transcribe voice input",
-    });
 
     #[cfg(feature = "crosstalk")]
     cmds.push(CommandDef {
@@ -112,8 +98,6 @@ pub fn handle_command(input: &str, current_model: &str) -> Option<CommandResult>
             let args = input.strip_prefix("/model").unwrap_or("").trim();
             Some(model::run(args, current_model))
         }
-        #[cfg(feature = "voice")]
-        "/rec" => Some(CommandResult::RecordVoice),
         #[cfg(feature = "crosstalk")]
         "/crosstalk" => Some(CommandResult::Crosstalk(
             input.split_whitespace().skip(1).map(String::from).collect(),

@@ -213,8 +213,6 @@ pub struct App {
     /// Resident memory of this process, in bytes. `None` if the OS refused.
     pub memory: Option<usize>,
     last_memory_update: Instant,
-    #[cfg(feature = "voice")]
-    pub pending_voice_recording: bool,
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     session_tx: mpsc::UnboundedSender<SessionCmd>,
@@ -272,8 +270,6 @@ impl App {
             last_spinner_update: Instant::now(),
             memory: current_memory(),
             last_memory_update: Instant::now(),
-            #[cfg(feature = "voice")]
-            pending_voice_recording: false,
             ui_rx,
             ui_tx,
             session_tx,
@@ -586,24 +582,6 @@ impl App {
                     self.messages.push(DisplayMessage::Info(info));
                 }
 
-                CommandResult::Continue => {}
-
-                #[cfg(feature = "voice")]
-                CommandResult::SendMessage(msg) => {
-                    // Send the transcribed message as if user typed it
-                    self.messages.push(DisplayMessage::User(msg.clone()));
-                    self.state = AppState::Busy;
-                    self.auto_scroll = true;
-                    let _ = self.session_tx.send(SessionCmd::SendMessage(msg));
-                    return false;
-                }
-
-                #[cfg(feature = "voice")]
-                CommandResult::RecordVoice => {
-                    self.pending_voice_recording = true;
-                    return false;
-                }
-
                 #[cfg(feature = "crosstalk")]
                 CommandResult::Crosstalk(args) => self.crosstalk_command(args),
             }
@@ -865,12 +843,6 @@ impl App {
 
             if self.submit_text(text) {
                 self.quit_requested = true;
-                return;
-            }
-
-            // `/rec` leaves the TUI; let the main loop do that first.
-            #[cfg(feature = "voice")]
-            if self.pending_voice_recording {
                 return;
             }
 
@@ -1183,50 +1155,6 @@ pub fn run(
     terminal.clear()?;
 
     loop {
-        // Handle voice recording if requested
-        #[cfg(feature = "voice")]
-        if app.pending_voice_recording {
-            app.pending_voice_recording = false;
-
-            // Exit TUI temporarily
-            drop(terminal);
-            crossterm::terminal::disable_raw_mode()?;
-
-            // Run voice recording (async, blocks until done)
-            let rec_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async { crate::commands::rec::run().await })
-            });
-
-            // Recreate terminal and re-enable raw mode
-            crossterm::terminal::enable_raw_mode()?;
-            crossterm::execute!(
-                std::io::stdout(),
-                crossterm::terminal::EnterAlternateScreen,
-                AlternateScroll(true),
-            )?;
-            captured = false;
-            let backend = CrosstermBackend::new(std::io::stdout());
-            terminal = Terminal::new(backend)?;
-            terminal.clear()?;
-
-            // Process result
-            match rec_result {
-                Ok(CommandResult::SendMessage(msg)) => {
-                    app.messages.push(DisplayMessage::User(msg.clone()));
-                    app.state = AppState::Busy;
-                    app.auto_scroll = true;
-                    let _ = app.session_tx.send(SessionCmd::SendMessage(msg));
-                }
-                Err(e) => {
-                    app.messages.push(DisplayMessage::Error(format!(
-                        "Voice recording failed: {e}"
-                    )));
-                }
-                _ => {}
-            }
-        }
-
         // Update spinner frame if busy (~10 fps for spinner animation)
         if app.state == AppState::Busy
             && app.last_spinner_update.elapsed() >= Duration::from_millis(100)

@@ -1,8 +1,7 @@
 use super::CommandResult;
 
 pub fn run() -> CommandResult {
-    #[allow(unused_mut)]
-    let mut text = String::from(
+    let text = String::from(
         "\
 Available commands:
   /help /h    Show this help message
@@ -16,9 +15,6 @@ While a turn is running:
   Backspace   (on an empty line) Remove the last queued line for editing
   Ctrl+C/Esc  Stop the current turn; queued lines come back to the input",
     );
-
-    #[cfg(feature = "voice")]
-    text.push_str("\n  /rec        Record and transcribe voice input");
 
     CommandResult::Info(text)
 }
