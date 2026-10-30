@@ -6,10 +6,10 @@ use std::io::Read;
 use anyhow::{Result, bail};
 use tokio_util::sync::CancellationToken;
 
-use claude_code_core::event::EventHandler;
-use claude_code_core::history;
-use claude_code_core::permission::PermissionHandler;
-use claude_code_core::session::Session;
+use tack_core::event::EventHandler;
+use tack_core::history;
+use tack_core::permission::PermissionHandler;
+use tack_core::session::Session;
 
 pub fn read_stdin() -> Result<String> {
     let mut prompt = String::new();

@@ -23,7 +23,7 @@ pub const LM_STUDIO_PREFIX: &str = "lmstudio:";
 /// Default address of the LM Studio local server.
 pub const LM_STUDIO_DEFAULT_URL: &str = "http://localhost:1234";
 
-/// The Messages API URL. `ANTHROPIC_BASE_URL` points ccrs at another
+/// The Messages API URL. `ANTHROPIC_BASE_URL` points tack at another
 /// server, as it does for `claude`: a proxy, or a mock in tests. The API
 /// key goes to that server, so plain http is allowed only to this machine.
 fn anthropic_endpoint(base: Option<String>) -> anyhow::Result<String> {
@@ -209,14 +209,14 @@ impl Provider {
     ///
     /// An Anthropic OAuth (subscription) token requires the Claude Code line
     /// exactly; an API key with that line is refused with a "credit balance
-    /// is too low" error, so it gets the ccrs line.
+    /// is too low" error, so it gets the tack line.
     pub fn identity(self, is_oauth: bool) -> &'static str {
         match self {
             Self::Anthropic if is_oauth => {
                 "You are Claude Code, Anthropic's official CLI for Claude."
             }
             Self::Anthropic | Self::Cerebras | Self::LmStudio => {
-                "You are ccrs, a coding assistant running in a terminal. \
+                "You are tack, a coding assistant running in a terminal. \
                  Call the provided tools to inspect and change the codebase."
             }
         }

@@ -4,9 +4,9 @@ use std::time::Duration;
 
 #[test]
 fn sigterm_in_print_mode_writes_nothing_to_stdout() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ccrs"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tack"))
         .arg("-p")
-        // A key in the environment: ccrs skips the login and waits on stdin.
+        // A key in the environment: tack skips the login and waits on stdin.
         .env("ANTHROPIC_API_KEY", "sk-ant-test")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use claude_code_core::history::SessionSummary;
+use tack_core::history::SessionSummary;
 use dialoguer::{Input, Password, Select};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +47,7 @@ pub fn prompt_api_key() -> Result<String> {
 
 /// "5m ago", "3h ago", "2d ago".
 fn format_age(updated_at: u64) -> String {
-    let secs = claude_code_core::history::now_secs().saturating_sub(updated_at);
+    let secs = tack_core::history::now_secs().saturating_sub(updated_at);
 
     match secs {
         0..=59 => "just now".to_string(),

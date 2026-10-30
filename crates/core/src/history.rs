@@ -17,7 +17,7 @@ use crate::store::Store;
 
 const PREVIEW_CHARS: usize = 80;
 
-/// Format of the session files this ccrs writes. A file without a version
+/// Format of the session files this tack writes. A file without a version
 /// is format 1. Format 2 adds the highest terminal and monitor ids.
 const FORMAT_VERSION: u64 = 2;
 
@@ -171,7 +171,7 @@ pub(crate) fn lock_in(dir: &Path, id: &str) -> Result<SessionLock> {
             let error = std::io::Error::last_os_error();
 
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                bail!("Session {id} is open in another ccrs process");
+                bail!("Session {id} is open in another tack process");
             }
             return Err(error).context("Failed to lock the session");
         }
@@ -235,7 +235,7 @@ fn save_in(dir: &Path, session: &StoredSession) -> Result<()> {
 }
 
 /// Give the session files and locks in `dir` to the owner only. Files
-/// saved before ccrs wrote mode 0600 can be readable by all. A symbolic
+/// saved before tack wrote mode 0600 can be readable by all. A symbolic
 /// link is skipped: a chmod would change its target.
 fn make_files_private(dir: &Path) {
     #[cfg(unix)]
@@ -334,7 +334,7 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 fn not_a_link(error: std::io::Error) -> std::io::Error {
     #[cfg(unix)]
     if error.raw_os_error() == Some(libc::ELOOP) {
-        return std::io::Error::other("the file is a symlink; ccrs does not follow it");
+        return std::io::Error::other("the file is a symlink; tack does not follow it");
     }
 
     error
@@ -384,13 +384,13 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
     let json: serde_json::Value =
         serde_json::from_str(&contents).with_context(|| format!("Session {id} is corrupted"))?;
 
-    // A newer format can hold fields this ccrs does not know. A save would
+    // A newer format can hold fields this tack does not know. A save would
     // erase them, so the file is not loaded.
     let version = json.get("version").map_or(Some(1), serde_json::Value::as_u64);
     match version {
         Some(v) if v <= FORMAT_VERSION => {}
         _ => bail!(
-            "Session {id} was saved by a newer ccrs (format {}); this ccrs reads format {FORMAT_VERSION}",
+            "Session {id} was saved by a newer tack (format {}); this tack reads format {FORMAT_VERSION}",
             json["version"]
         ),
     }
@@ -401,7 +401,7 @@ fn load_from(dir: &Path, id: &str) -> Result<StoredSession> {
     // The lock and the saves use the name of the file. A copy under
     // another name would save into the session of its content.
     if stored.id != id {
-        bail!("Session file {id}.json holds session {}; ccrs does not load it", stored.id);
+        bail!("Session file {id}.json holds session {}; tack does not load it", stored.id);
     }
 
     Ok(stored)
@@ -693,7 +693,7 @@ pub(crate) mod tests {
 
         let first = lock_in(tmp.path(), "1").unwrap();
         let err = lock_in(tmp.path(), "1").err().expect("second lock taken");
-        assert!(err.to_string().contains("open in another ccrs process"), "{err}");
+        assert!(err.to_string().contains("open in another tack process"), "{err}");
 
         // Another id is free, and the id is free again once released.
         lock_in(tmp.path(), "2").unwrap();
@@ -705,15 +705,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_file_from_a_newer_ccrs_is_refused_not_rewritten() {
+    fn a_file_from_a_newer_tack_is_refused_not_rewritten() {
         let tmp = tempfile::tempdir().unwrap();
         let mut json = json_of(&stored("1", "/p", 10, "hi"));
         json["version"] = serde_json::json!(FORMAT_VERSION + 1);
-        json["only_newer_ccrs_knows"] = serde_json::json!(true);
+        json["only_newer_tack_knows"] = serde_json::json!(true);
         write_raw(tmp.path(), "1", &json.to_string());
 
         let err = load_from(tmp.path(), "1").unwrap_err();
-        assert!(err.to_string().contains("newer ccrs"), "{err}");
+        assert!(err.to_string().contains("newer tack"), "{err}");
     }
 
     #[test]
@@ -820,14 +820,14 @@ pub(crate) mod tests {
         assert!(tmp_files(tmp.path()).is_empty());
     }
 
-    /// Needs a small empty volume: CCRS_FULL_DISK_DIR names a directory on
+    /// Needs a small empty volume: TACK_FULL_DISK_DIR names a directory on
     /// it. The test saves a session, fills the volume, then saves again.
     #[test]
     #[ignore]
     fn a_save_on_a_full_disk_keeps_the_old_file() {
         use std::io::Write;
 
-        let dir = PathBuf::from(std::env::var("CCRS_FULL_DISK_DIR").unwrap());
+        let dir = PathBuf::from(std::env::var("TACK_FULL_DISK_DIR").unwrap());
         save_in(&dir, &stored("1", "/p", 1, "before")).unwrap();
         let before = fs::read(dir.join("1.json")).unwrap();
 

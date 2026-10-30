@@ -2,9 +2,9 @@ use std::sync::mpsc as std_mpsc;
 
 use tokio::sync::mpsc;
 
-use claude_code_core::api::Usage;
-use claude_code_core::event::EventHandler;
-use claude_code_core::lmstudio::LmModel;
+use tack_core::api::Usage;
+use tack_core::event::EventHandler;
+use tack_core::lmstudio::LmModel;
 
 /// Events sent from the session task to the UI.
 pub enum UiEvent {
@@ -43,7 +43,7 @@ pub enum UiEvent {
     /// A note for the user from the session task.
     Info(String),
     /// Output of a monitor, or its end.
-    Monitor(claude_code_core::monitor::MonitorEvent),
+    Monitor(tack_core::monitor::MonitorEvent),
     /// Events drained from the crosstalk daemon, as it printed them.
     #[cfg(feature = "crosstalk")]
     Crosstalk(String),

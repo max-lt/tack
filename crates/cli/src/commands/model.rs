@@ -1,5 +1,5 @@
-use claude_code_core::api::{AVAILABLE_MODELS, DEFAULT_MODEL};
-use claude_code_core::provider::LM_STUDIO_PREFIX;
+use tack_core::api::{AVAILABLE_MODELS, DEFAULT_MODEL};
+use tack_core::provider::LM_STUDIO_PREFIX;
 
 use super::CommandResult;
 

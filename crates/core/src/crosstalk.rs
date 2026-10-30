@@ -20,7 +20,7 @@ use crate::escape::escape;
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Longest wait for a reply, after any wait that the request asks for:
-/// a daemon that hangs must not hang ccrs.
+/// a daemon that hangs must not hang tack.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The kinds of event that the daemon sends.
@@ -213,7 +213,7 @@ fn nodes(socket: &std::path::Path) -> Option<(Node, Node)> {
 /// bit.
 fn check_socket(socket: &Node, parent: &Node, me: u32) -> Result<()> {
     if socket.kind != NodeKind::Socket {
-        bail!("not a socket; ccrs does not follow a link");
+        bail!("not a socket; tack does not follow a link");
     }
     if socket.uid != me {
         bail!("belongs to another user");
@@ -655,7 +655,7 @@ mod daemon_tests {
         // SAFETY: the only test that reads CROSSTALK_HOME.
         unsafe { std::env::set_var("CROSSTALK_HOME", home.path()) };
 
-        let client = Client::new("ccrs-test").unwrap();
+        let client = Client::new("tack-test").unwrap();
         client.start().await.unwrap();
 
         let whoami = client.request("whoami", &[]).await.unwrap();

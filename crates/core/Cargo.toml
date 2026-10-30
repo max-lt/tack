@@ -1,18 +1,18 @@
 [package]
-name = "claude-code-core"
+name = "tack-core"
 version = "0.1.0"
 edition = "2024"
 
 [features]
-search = ["dep:ccrs-search"]
-git = ["dep:ccrs-git"]
+search = ["dep:tack-search"]
+git = ["dep:tack-git"]
 # Talk to other people's agents through a local `crosstalk daemon`.
 crosstalk = []
 
 [dependencies]
-ccrs-utils = { path = "../utils" }
-ccrs-search = { path = "../search", optional = true }
-ccrs-git = { path = "../git", optional = true }
+tack-utils = { path = "../utils" }
+tack-search = { path = "../search", optional = true }
+tack-git = { path = "../git", optional = true }
 tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
 tokio-util = "0.7"
 eventsource-stream = "0.2"

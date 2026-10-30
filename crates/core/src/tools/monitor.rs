@@ -113,7 +113,7 @@ impl ToolDef for MonitorTool {
                 "Monitor {id} started. Its output will reach you as messages."
             )),
             Ok(id) => ToolOutput::success(format!(
-                "Monitor {id} started. This run (ccrs -p) ends after this turn, and the \
+                "Monitor {id} started. This run (tack -p) ends after this turn, and the \
                  monitor stops with it: its output will not reach you. The monitor stays \
                  in the session file, and a later interactive resume offers to start it again."
             )),
@@ -272,7 +272,7 @@ mod tests {
     async fn the_result_says_whether_the_output_will_come() {
         let input = serde_json::json!({ "command": "sleep 30", "description": "d" });
 
-        // ccrs -p: nobody reads the events.
+        // tack -p: nobody reads the events.
         let (start, _, stop) = tools();
         let out = start.execute(&input, Path::new("/")).await.content;
         assert!(out.contains("ends after this turn"), "{out}");

@@ -1,6 +1,6 @@
 default:
     @just --list
 
-# Installe le binaire `ccrs` dans ~/.cargo/bin
+# Installe le binaire `tack` dans ~/.cargo/bin
 install:
     cargo install --path crates/cli

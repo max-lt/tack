@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use super::markdown::render_markdown;
 use super::{App, AppState, DisplayMessage, LmStatus, PickerEntry};
 use crate::commands;
-use claude_code_core::provider::{LM_STUDIO_PREFIX, wire_model};
+use tack_core::provider::{LM_STUDIO_PREFIX, wire_model};
 
 /// Render the entire UI.
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -137,7 +137,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let ctx = format!("ctx {}% ({})", ctx_pct, format_tokens(app.context_window));
 
     let mut bar = vec![
-        Span::styled(" claude-code-rs", Style::new().bold()),
+        Span::styled(" tack", Style::new().bold()),
         Span::raw(" │ "),
         Span::raw(display_model(&app.model)),
         Span::raw(" │ "),

@@ -79,7 +79,7 @@ pub trait Sandbox: Send + Sync {
     }
 }
 
-/// How a long-running program talks to ccrs.
+/// How a long-running program talks to tack.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Io {
@@ -306,7 +306,7 @@ mod apple {
 
             if vm.is_none() {
                 let copy = SharedCopy::new(workspace)?;
-                let name = format!("ccrs-{:016x}", rand::random::<u64>());
+                let name = format!("tack-{:016x}", rand::random::<u64>());
 
                 let mut args = ["create", "--name", &name].map(String::from).to_vec();
                 args.extend(network.args.iter().cloned());

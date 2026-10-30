@@ -1,21 +1,21 @@
 [package]
-name = "claude-code-cli"
+name = "tack-cli"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "ccrs"
+name = "tack"
 path = "src/main.rs"
 
 [features]
 default = ["git", "search", "voice"]
-git = ["claude-code-core/git"]
-search = ["claude-code-core/search"]
+git = ["tack-core/git"]
+search = ["tack-core/search"]
 voice = ["dep:cpal", "dep:hound"]
-crosstalk = ["claude-code-core/crosstalk"]
+crosstalk = ["tack-core/crosstalk"]
 
 [dependencies]
-claude-code-core = { path = "../core" }
+tack-core = { path = "../core" }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

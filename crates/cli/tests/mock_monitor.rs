@@ -1,5 +1,5 @@
-//! ccrs -p against a local mock of the Messages API, in a temporary HOME:
-//! the model asks for a monitor, ccrs starts it, and the run ends.
+//! tack -p against a local mock of the Messages API, in a temporary HOME:
+//! the model asks for a monitor, tack starts it, and the run ends.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -142,8 +142,8 @@ impl Sandbox {
         self.root.path().join(format!("{name}.pid"))
     }
 
-    fn ccrs(&self, api: &MockApi, session: &str) -> Child {
-        Command::new(env!("CARGO_BIN_EXE_ccrs"))
+    fn tack(&self, api: &MockApi, session: &str) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_tack"))
             .args(["-p", "Watch it.", "--session", session])
             .current_dir(self.root.path().join("project"))
             .env("HOME", self.root.path().join("home"))
@@ -158,7 +158,7 @@ impl Sandbox {
     fn session_file(&self, id: &str) -> PathBuf {
         self.root
             .path()
-            .join("home/Library/Application Support/claude-code-rs/sessions")
+            .join("home/Library/Application Support/tack/sessions")
             .join(format!("{id}.json"))
     }
 }
@@ -198,13 +198,13 @@ fn print_mode_starts_a_monitor_and_stops_it_at_exit() {
     let sandbox = Sandbox::new();
     let api = MockApi::start(sandbox.command("one"), Duration::ZERO);
 
-    let run = sandbox.ccrs(&api, "mock-one");
+    let run = sandbox.tack(&api, "mock-one");
     let pid = wait_for_pid(&sandbox.pid_file("one"));
     let output = run.wait_with_output().unwrap();
 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "mock done");
-    assert!(gone_soon(&pid), "the monitor {pid} outlived ccrs -p");
+    assert!(gone_soon(&pid), "the monitor {pid} outlived tack -p");
 
     let results = api.tool_results.lock().unwrap().join("\n");
     assert!(results.contains("will not reach you"), "{results}");
@@ -216,14 +216,14 @@ fn print_mode_starts_a_monitor_and_stops_it_at_exit() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn sigterm_to_one_ccrs_leaves_the_monitors_of_another() {
+fn sigterm_to_one_tack_leaves_the_monitors_of_another() {
     let sandbox = Sandbox::new();
     // The final reply waits, so both runs hold their monitors.
     let api_a = MockApi::start(sandbox.command("a"), Duration::from_secs(30));
     let api_b = MockApi::start(sandbox.command("b"), Duration::from_secs(30));
 
-    let a = sandbox.ccrs(&api_a, "mock-a");
-    let b = sandbox.ccrs(&api_b, "mock-b");
+    let a = sandbox.tack(&api_a, "mock-a");
+    let b = sandbox.tack(&api_b, "mock-b");
     let (pid_a, pid_b) = (wait_for_pid(&sandbox.pid_file("a")), wait_for_pid(&sandbox.pid_file("b")));
 
     sigterm(&a);

@@ -36,8 +36,20 @@ impl Credentials {
 
 pub fn config_dir() -> Result<PathBuf> {
     let base = dirs::config_dir().context("Could not determine config directory")?;
-    let dir = base.join("claude-code-rs");
-    make_private(&dir).context("Failed to create config directory")?;
+    data_dir_in(&base).context("Failed to create config directory")
+}
+
+/// `<base>/tack`. A `<base>/claude-code-rs` directory from before the rename
+/// moves there, if `<base>/tack` does not exist yet.
+fn data_dir_in(base: &Path) -> std::io::Result<PathBuf> {
+    let dir = base.join("tack");
+    let former = base.join("claude-code-rs");
+
+    if fs::symlink_metadata(&dir).is_err() && fs::symlink_metadata(&former).is_ok_and(|m| m.is_dir()) {
+        fs::rename(&former, &dir)?;
+    }
+
+    make_private(&dir)?;
     Ok(dir)
 }
 
@@ -50,11 +62,11 @@ pub(crate) fn make_private(dir: &Path) -> std::io::Result<()> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        // The owner of the directory can read and swap what ccrs stores.
+        // The owner of the directory can read and swap what tack stores.
         // SAFETY: geteuid takes no argument and cannot fail.
         if fs::metadata(dir)?.uid() != unsafe { libc::geteuid() } {
             return Err(std::io::Error::other(format!(
-                "{} belongs to another user; ccrs does not store data there",
+                "{} belongs to another user; tack does not store data there",
                 dir.display()
             )));
         }
@@ -167,6 +179,31 @@ fn load_settings_file(path: &Path) -> Option<Settings> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_directory_of_the_former_name_moves_to_the_new_one() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir_all(base.path().join("claude-code-rs/sessions")).unwrap();
+        fs::write(base.path().join("claude-code-rs/credentials.json"), "{}").unwrap();
+
+        let dir = data_dir_in(base.path()).unwrap();
+
+        assert_eq!(dir, base.path().join("tack"));
+        assert!(dir.join("sessions").is_dir());
+        assert!(dir.join("credentials.json").is_file());
+        assert!(!base.path().join("claude-code-rs").exists());
+    }
+
+    #[test]
+    fn the_former_directory_stays_when_the_new_one_exists() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir_all(base.path().join("claude-code-rs")).unwrap();
+        fs::create_dir_all(base.path().join("tack")).unwrap();
+
+        data_dir_in(base.path()).unwrap();
+
+        assert!(base.path().join("claude-code-rs").is_dir());
+    }
 
     #[cfg(unix)]
     #[test]

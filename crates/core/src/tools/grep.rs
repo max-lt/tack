@@ -226,7 +226,7 @@ fn collect_files(path: &Path, glob_filter: Option<&str>) -> Vec<std::path::PathB
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            !ccrs_utils::is_ignored_dir(name)
+            !tack_utils::is_ignored_dir(name)
         })
         .build();
 

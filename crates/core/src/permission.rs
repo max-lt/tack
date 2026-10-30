@@ -353,7 +353,7 @@ fn typed_lines(input: &str, cut_at_edit_keys: bool) -> Option<Vec<String>> {
 impl PermissionConfig {
     /// Whether prefix rules allow each line of TerminalSend input. The
     /// lines end at `<Enter>`, `<C-m>`, `<C-j>` and line breaks. An edit
-    /// key, such as `<Up>` or `<C-a>`, makes ccrs ask: the shell can then
+    /// key, such as `<Up>` or `<C-a>`, makes tack ask: the shell can then
     /// run a line that is not the text.
     fn typed_lines_allowed(&self, input: &str) -> bool {
         let Some(lines) = typed_lines(input, false) else {

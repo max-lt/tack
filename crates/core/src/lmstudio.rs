@@ -139,7 +139,7 @@ mod tests {
     }
 
     /// Against a real server. Run with:
-    /// `cargo test -p claude-code-core --lib -- --ignored lmstudio`
+    /// `cargo test -p tack-core --lib -- --ignored lmstudio`
     #[tokio::test]
     #[ignore = "needs LM Studio listening on :1234"]
     async fn lmstudio_live_listing() {

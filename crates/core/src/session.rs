@@ -54,7 +54,7 @@ pub struct Session<P: PermissionHandler> {
     saved_monitors: Vec<crate::store::MonitorEntry>,
     /// What a resume lost, told to the model with the next message.
     resume_note: Option<String>,
-    /// Keeps other ccrs processes off this session id.
+    /// Keeps other tack processes off this session id.
     lock: Option<history::SessionLock>,
     /// The session id of the crosstalk daemon. /clear keeps it, so the
     /// identity and the peers stay with the conversation line.
@@ -470,7 +470,7 @@ impl<P: PermissionHandler> Session<P> {
         Some(note)
     }
 
-    /// The store with the saved monitors that did not start yet: ccrs -p
+    /// The store with the saved monitors that did not start yet: tack -p
     /// does not start them, and its save must not drop them.
     fn store_to_save(&self) -> Store {
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
@@ -1022,7 +1022,7 @@ mod tests {
             debounce_seconds: 0,
         });
 
-        // What ccrs -p does: restore, one turn, save. No restart.
+        // What tack -p does: restore, one turn, save. No restart.
         s.restore(saved);
         let monitors = s.to_stored().unwrap().store.monitors;
 

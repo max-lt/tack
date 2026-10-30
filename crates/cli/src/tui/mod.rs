@@ -15,19 +15,19 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use claude_code_core::api::{
+use tack_core::api::{
     AVAILABLE_MODELS, Content, ContentBlock, DEFAULT_MODEL, Message, Usage,
 };
-use claude_code_core::history;
-use claude_code_core::lmstudio::{self, LmModel};
-use claude_code_core::provider::{context_window_for, lm_studio_model_id};
-use claude_code_core::session::Session;
+use tack_core::history;
+use tack_core::lmstudio::{self, LmModel};
+use tack_core::provider::{context_window_for, lm_studio_model_id};
+use tack_core::session::Session;
 
 #[cfg(feature = "crosstalk")]
-use claude_code_core::crosstalk::{self, Client as Crosstalk};
+use tack_core::crosstalk::{self, Client as Crosstalk};
 
 use crate::commands::{self, CommandResult};
-use claude_code_core::permission::PermissionHandler;
+use tack_core::permission::PermissionHandler;
 
 pub use event::{ChannelEventHandler, SessionCmd, UiEvent};
 
@@ -755,7 +755,7 @@ impl App {
         }
 
         match (args[0].as_str(), args.len()) {
-            ("accept" | "connect", 2) => args.push("ccrs session".to_string()),
+            ("accept" | "connect", 2) => args.push("tack session".to_string()),
             ("accept" | "connect", n) if n > 3 => {
                 let description = args.split_off(2).join(" ");
                 args.push(description);
@@ -798,7 +798,7 @@ impl App {
         // characters cannot change what the user reads.
         let shown = |text: &str| {
             text.lines()
-                .map(claude_code_core::escape::escape)
+                .map(tack_core::escape::escape)
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -1304,7 +1304,7 @@ pub fn run(
     let saved_id = last_saved.lock().ok().and_then(|slot| slot.clone());
 
     if let Some(id) = saved_id {
-        println!("\nResume this conversation with:\n  ccrs --resume {id}");
+        println!("\nResume this conversation with:\n  tack --resume {id}");
     }
 
     Ok(())
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     fn monitor_event() -> UiEvent {
-        UiEvent::Monitor(claude_code_core::monitor::MonitorEvent {
+        UiEvent::Monitor(tack_core::monitor::MonitorEvent {
             id: 1,
             description: "log".to_string(),
             lines: vec!["ERROR disk full".to_string()],
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     fn monitor_event_from(id: u32) -> UiEvent {
-        UiEvent::Monitor(claude_code_core::monitor::MonitorEvent {
+        UiEvent::Monitor(tack_core::monitor::MonitorEvent {
             id,
             description: "log".to_string(),
             lines: vec![format!("from {id}")],

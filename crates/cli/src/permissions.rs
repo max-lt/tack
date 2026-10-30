@@ -3,9 +3,9 @@ use std::sync::mpsc as std_mpsc;
 
 use tokio::sync::mpsc;
 
-use claude_code_core::monitor::escape;
-use claude_code_core::permission::{PermissionConfig, PermissionHandler, Tool};
-use claude_code_core::sandbox::FileChange;
+use tack_core::monitor::escape;
+use tack_core::permission::{PermissionConfig, PermissionHandler, Tool};
+use tack_core::sandbox::FileChange;
 
 use crate::tui::UiEvent;
 

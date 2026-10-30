@@ -93,7 +93,7 @@ impl Terminals {
         }
 
         if self.registry.is_closed() {
-            return Err(io::Error::other("ccrs is exiting; no terminal can open"));
+            return Err(io::Error::other("tack is exiting; no terminal can open"));
         }
 
         if self.open.lock().unwrap().len() >= MAX_TERMINALS {
@@ -128,7 +128,7 @@ impl Terminals {
         let pid = child.process_id();
         if !pid.is_some_and(|pid| self.registry.add(pid)) {
             let _ = child.kill();
-            return Err(io::Error::other("ccrs is exiting; no terminal can open"));
+            return Err(io::Error::other("tack is exiting; no terminal can open"));
         }
         let group = Group {
             pgid: pid,

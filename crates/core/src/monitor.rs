@@ -118,7 +118,7 @@ pub struct Monitors {
     registry: &'static Registry,
     /// When the session's monitors last woke the model.
     wake_ups: Arc<Mutex<VecDeque<Duration>>>,
-    /// Set when someone delivers the events to the model. ccrs -p does not.
+    /// Set when someone delivers the events to the model. tack -p does not.
     listened: std::sync::atomic::AtomicBool,
     /// The clock of the wake-up windows. It must count sleep.
     clock: Arc<dyn Fn() -> Duration + Send + Sync>,
@@ -505,7 +505,7 @@ fn take_wake_up(window: &mut VecDeque<Duration>, now: Duration, max: usize) -> b
 }
 
 fn exiting() -> std::io::Error {
-    std::io::Error::other("ccrs is exiting; no monitor can start")
+    std::io::Error::other("tack is exiting; no monitor can start")
 }
 
 /// A monitor's command. Dropping it kills the group before the child:

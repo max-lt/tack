@@ -4,7 +4,7 @@
 use std::process::{Command, Stdio};
 
 fn run(dir: &std::path::Path, base_url: Option<&str>) -> String {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccrs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tack"));
     cmd.arg("-p")
         .current_dir(dir)
         .env("HOME", dir)
@@ -16,7 +16,7 @@ fn run(dir: &std::path::Path, base_url: Option<&str>) -> String {
         cmd.env("ANTHROPIC_BASE_URL", url);
     }
 
-    // An empty stdin stops ccrs at "needs a prompt", before any request.
+    // An empty stdin stops tack at "needs a prompt", before any request.
     let output = cmd.output().unwrap();
     String::from_utf8_lossy(&output.stderr).into_owned()
 }

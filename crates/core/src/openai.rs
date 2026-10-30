@@ -1,6 +1,6 @@
 //! Translation to and from the OpenAI chat completions wire format.
 //!
-//! `ccrs` speaks Anthropic internally: a turn is a [`Message`] holding either
+//! `tack` speaks Anthropic internally: a turn is a [`Message`] holding either
 //! text or a list of [`ContentBlock`]s. This module converts that to the shape
 //! Cerebras expects, and folds its SSE chunks back into a [`StreamResult`].
 //!

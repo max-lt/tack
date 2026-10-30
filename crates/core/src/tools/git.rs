@@ -197,7 +197,7 @@ impl ToolDef for GitTool {
                     .get("mode")
                     .and_then(|v| v.as_str())
                     .unwrap_or("mixed");
-                let mode: ccrs_git::ResetMode = match mode_str.parse() {
+                let mode: tack_git::ResetMode = match mode_str.parse() {
                     Ok(m) => m,
                     Err(_) => {
                         return ToolOutput::error(
@@ -246,7 +246,7 @@ impl ToolDef for GitTool {
 }
 
 fn exec_status(cwd: &Path) -> ToolOutput {
-    match ccrs_git::status(cwd) {
+    match tack_git::status(cwd) {
         Ok(entries) => {
             if entries.is_empty() {
                 return ToolOutput::success("Working tree clean.");
@@ -259,27 +259,27 @@ fn exec_status(cwd: &Path) -> ToolOutput {
 }
 
 fn exec_diff_staged(cwd: &Path) -> ToolOutput {
-    match ccrs_git::diff_staged(cwd) {
+    match tack_git::diff_staged(cwd) {
         Ok((entries, stat)) => format_diff(entries, stat),
         Err(e) => ToolOutput::error(format!("git diff --cached failed: {e}")),
     }
 }
 
 fn exec_diff_unstaged(cwd: &Path) -> ToolOutput {
-    match ccrs_git::diff_unstaged(cwd) {
+    match tack_git::diff_unstaged(cwd) {
         Ok((entries, stat)) => format_diff(entries, stat),
         Err(e) => ToolOutput::error(format!("git diff failed: {e}")),
     }
 }
 
 fn exec_diff_range(cwd: &Path, from: &str, to: &str) -> ToolOutput {
-    match ccrs_git::diff_range(cwd, from, to) {
+    match tack_git::diff_range(cwd, from, to) {
         Ok((entries, stat)) => format_diff(entries, stat),
         Err(e) => ToolOutput::error(format!("git diff {from}..{to} failed: {e}")),
     }
 }
 
-fn format_diff(entries: Vec<ccrs_git::DiffEntry>, stat: ccrs_git::DiffStat) -> ToolOutput {
+fn format_diff(entries: Vec<tack_git::DiffEntry>, stat: tack_git::DiffStat) -> ToolOutput {
     if entries.is_empty() {
         return ToolOutput::success("No changes.");
     }
@@ -302,7 +302,7 @@ fn format_diff(entries: Vec<ccrs_git::DiffEntry>, stat: ccrs_git::DiffStat) -> T
 }
 
 fn exec_log(cwd: &Path, limit: usize) -> ToolOutput {
-    match ccrs_git::git_log(cwd, limit) {
+    match tack_git::git_log(cwd, limit) {
         Ok(entries) => {
             if entries.is_empty() {
                 return ToolOutput::success("No commits yet.");
@@ -323,7 +323,7 @@ fn exec_log(cwd: &Path, limit: usize) -> ToolOutput {
 }
 
 fn exec_show(cwd: &Path, rev: &str) -> ToolOutput {
-    match ccrs_git::show(cwd, rev) {
+    match tack_git::show(cwd, rev) {
         Ok(detail) => {
             let mut out = format!(
                 "commit {}\nAuthor: {} <{}>\nDate:   {}\n\n    {}\n\n",
@@ -354,8 +354,8 @@ fn exec_show(cwd: &Path, rev: &str) -> ToolOutput {
 
 fn exec_blame(cwd: &Path, file_path: &str, start: Option<usize>, end: Option<usize>) -> ToolOutput {
     let result = match (start, end) {
-        (Some(s), Some(e)) => ccrs_git::blame_range(cwd, file_path, s, e),
-        _ => ccrs_git::blame(cwd, file_path),
+        (Some(s), Some(e)) => tack_git::blame_range(cwd, file_path, s, e),
+        _ => tack_git::blame(cwd, file_path),
     };
 
     match result {
@@ -379,12 +379,12 @@ fn exec_blame(cwd: &Path, file_path: &str, start: Option<usize>, end: Option<usi
 }
 
 fn exec_branch(cwd: &Path, include_remote: bool) -> ToolOutput {
-    let current = ccrs_git::current_branch(cwd)
+    let current = tack_git::current_branch(cwd)
         .ok()
         .flatten()
         .unwrap_or_default();
 
-    match ccrs_git::list_branches(cwd, include_remote) {
+    match tack_git::list_branches(cwd, include_remote) {
         Ok(branches) => {
             if branches.is_empty() {
                 return ToolOutput::success("No branches.");
@@ -406,7 +406,7 @@ fn exec_branch(cwd: &Path, include_remote: bool) -> ToolOutput {
 // ---------------------------------------------------------------------------
 
 fn exec_add(cwd: &Path, pathspec: &[&str]) -> ToolOutput {
-    match ccrs_git::add(cwd, pathspec) {
+    match tack_git::add(cwd, pathspec) {
         Ok(_) => {
             let files = pathspec.join(", ");
             ToolOutput::success(format!("Staged: {files}"))
@@ -416,7 +416,7 @@ fn exec_add(cwd: &Path, pathspec: &[&str]) -> ToolOutput {
 }
 
 fn exec_unstage(cwd: &Path, pathspec: &[&str]) -> ToolOutput {
-    match ccrs_git::unstage(cwd, pathspec) {
+    match tack_git::unstage(cwd, pathspec) {
         Ok(_) => {
             let files = pathspec.join(", ");
             ToolOutput::success(format!("Unstaged: {files}"))
@@ -426,35 +426,35 @@ fn exec_unstage(cwd: &Path, pathspec: &[&str]) -> ToolOutput {
 }
 
 fn exec_commit(cwd: &Path, message: &str) -> ToolOutput {
-    match ccrs_git::commit(cwd, message) {
+    match tack_git::commit(cwd, message) {
         Ok(oid) => ToolOutput::success(format!("Created commit {}", &oid[..8])),
         Err(e) => ToolOutput::error(format!("git commit failed: {e}")),
     }
 }
 
 fn exec_push(cwd: &Path, remote: &str, refspec: &str, force: bool) -> ToolOutput {
-    match ccrs_git::push(cwd, remote, refspec, force) {
+    match tack_git::push(cwd, remote, refspec, force) {
         Ok(msg) => ToolOutput::success(msg),
         Err(e) => ToolOutput::error(format!("git push failed: {e}")),
     }
 }
 
-fn exec_reset(cwd: &Path, target: &str, mode: ccrs_git::ResetMode) -> ToolOutput {
-    match ccrs_git::reset(cwd, target, mode) {
+fn exec_reset(cwd: &Path, target: &str, mode: tack_git::ResetMode) -> ToolOutput {
+    match tack_git::reset(cwd, target, mode) {
         Ok(_) => ToolOutput::success(format!("Reset to {target}")),
         Err(e) => ToolOutput::error(format!("git reset failed: {e}")),
     }
 }
 
 fn exec_checkout(cwd: &Path, branch_name: &str) -> ToolOutput {
-    match ccrs_git::checkout(cwd, branch_name) {
+    match tack_git::checkout(cwd, branch_name) {
         Ok(_) => ToolOutput::success(format!("Switched to branch '{branch_name}'")),
         Err(e) => ToolOutput::error(format!("git checkout failed: {e}")),
     }
 }
 
 fn exec_create_branch(cwd: &Path, branch_name: &str, start_point: Option<&str>) -> ToolOutput {
-    match ccrs_git::create_branch(cwd, branch_name, start_point) {
+    match tack_git::create_branch(cwd, branch_name, start_point) {
         Ok(_) => {
             let from = start_point.unwrap_or("HEAD");
             ToolOutput::success(format!("Created branch '{branch_name}' from {from}"))
@@ -464,7 +464,7 @@ fn exec_create_branch(cwd: &Path, branch_name: &str, start_point: Option<&str>) 
 }
 
 fn exec_delete_branch(cwd: &Path, branch_name: &str, force: bool) -> ToolOutput {
-    match ccrs_git::delete_branch(cwd, branch_name, force) {
+    match tack_git::delete_branch(cwd, branch_name, force) {
         Ok(_) => ToolOutput::success(format!("Deleted branch '{branch_name}'")),
         Err(e) => ToolOutput::error(format!("git branch -d failed: {e}")),
     }

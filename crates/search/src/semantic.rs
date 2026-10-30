@@ -134,7 +134,7 @@ impl SemanticIndex {
         if self.model.is_none() {
             let cache_dir = dirs::cache_dir()
                 .context("could not find system cache directory")?
-                .join("ccrs")
+                .join("tack")
                 .join("models");
 
             std::fs::create_dir_all(&cache_dir)

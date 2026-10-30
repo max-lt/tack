@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use super::{ToolDef, ToolOutput};
 
 pub struct SearchTool {
-    index: Mutex<Option<ccrs_search::SearchIndex>>,
+    index: Mutex<Option<tack_search::SearchIndex>>,
 }
 
 impl Default for SearchTool {
@@ -35,7 +35,7 @@ impl SearchTool {
             }
         } else {
             // First build
-            let (index, stats) = ccrs_search::SearchIndex::open(cwd).map_err(|e| e.to_string())?;
+            let (index, stats) = tack_search::SearchIndex::open(cwd).map_err(|e| e.to_string())?;
 
             eprintln!(
                 "Index built: {} files, {:.1} KB",

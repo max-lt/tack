@@ -1,10 +1,10 @@
 [package]
-name = "ccrs-search"
+name = "tack-search"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ccrs-utils = { path = "../utils" }
+tack-utils = { path = "../utils" }
 tantivy = "0.26"
 ignore = "0.4"
 anyhow = "1"

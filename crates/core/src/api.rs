@@ -832,7 +832,7 @@ mod tests {
     /// translation, HTTP, SSE chunks, and accumulation back into blocks.
     ///
     /// Needs `CEREBRAS_API_KEY`. Run with:
-    /// `cargo test -p claude-code-core --lib -- --ignored cerebras`
+    /// `cargo test -p tack-core --lib -- --ignored cerebras`
     #[tokio::test]
     #[ignore = "calls the live Cerebras API"]
     async fn cerebras_round_trip_produces_a_tool_use_block() {

@@ -457,34 +457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ccrs-git"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "git2",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "ccrs-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ccrs-utils",
- "dirs 7.0.0",
- "fastembed",
- "ignore",
- "tantivy",
- "tempfile",
-]
-
-[[package]]
-name = "ccrs-utils"
-version = "0.1.0"
-
-[[package]]
 name = "census"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,63 +530,6 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
-
-[[package]]
-name = "claude-code-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "claude-code-core",
- "cpal",
- "crossterm",
- "dialoguer",
- "dotenvy",
- "hound",
- "memory-stats",
- "pulldown-cmark",
- "ratatui",
- "reqwest",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "webbrowser",
-]
-
-[[package]]
-name = "claude-code-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "bytes",
- "ccrs-git",
- "ccrs-search",
- "ccrs-utils",
- "dirs 7.0.0",
- "eventsource-stream",
- "futures",
- "futures-core",
- "glob",
- "hex",
- "http",
- "ignore",
- "libc",
- "portable-pty",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "url",
- "vt100",
-]
 
 [[package]]
 name = "color_quant"
@@ -4431,6 +4346,91 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "tack-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cpal",
+ "crossterm",
+ "dialoguer",
+ "dotenvy",
+ "hound",
+ "memory-stats",
+ "pulldown-cmark",
+ "ratatui",
+ "reqwest",
+ "serde_json",
+ "tack-core",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "webbrowser",
+]
+
+[[package]]
+name = "tack-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bytes",
+ "dirs 7.0.0",
+ "eventsource-stream",
+ "futures",
+ "futures-core",
+ "glob",
+ "hex",
+ "http",
+ "ignore",
+ "libc",
+ "portable-pty",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tack-git",
+ "tack-search",
+ "tack-utils",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
+ "vt100",
+]
+
+[[package]]
+name = "tack-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "git2",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "tack-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "fastembed",
+ "ignore",
+ "tack-utils",
+ "tantivy",
+ "tempfile",
+]
+
+[[package]]
+name = "tack-utils"
+version = "0.1.0"
 
 [[package]]
 name = "tantivy"

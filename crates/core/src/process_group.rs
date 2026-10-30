@@ -1,4 +1,4 @@
-//! Process groups of the commands that ccrs starts: monitors and
+//! Process groups of the commands that tack starts: monitors and
 //! terminals. A command runs as the leader of its own group, so a kill
 //! reaches the processes it starts. The group is killed before the leader
 //! is reaped: until then, no new process can take the group id.

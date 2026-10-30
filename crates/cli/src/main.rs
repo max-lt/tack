@@ -11,21 +11,21 @@ use clap::Parser;
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
-use claude_code_core::capabilities::Capabilities;
+use tack_core::capabilities::Capabilities;
 #[cfg(target_os = "macos")]
-use claude_code_core::egress::Allowlist;
-use claude_code_core::config::{Credentials, TokenType};
-use claude_code_core::history;
+use tack_core::egress::Allowlist;
+use tack_core::config::{Credentials, TokenType};
+use tack_core::history;
 #[cfg(target_os = "macos")]
-use claude_code_core::sandbox::AppleContainer;
-use claude_code_core::session::SessionBuilder;
-use claude_code_core::{auth, config};
+use tack_core::sandbox::AppleContainer;
+use tack_core::session::SessionBuilder;
+use tack_core::{auth, config};
 
-use claude_code_core::permission::PermissionHandler;
+use tack_core::permission::PermissionHandler;
 use permissions::{ChannelPermissions, PolicyPermissions};
 
 #[derive(Parser)]
-#[command(name = "ccrs", version, about = "Claude Code — Rust edition")]
+#[command(name = "tack", version, about = "A coding agent harness for the terminal")]
 struct Cli {
     /// Force re-login, ignoring saved credentials
     #[arg(long)]
@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
             _ = hup.recv() => 129,
         };
 
-        claude_code_core::process_group::kill_all();
+        tack_core::process_group::kill_all();
 
         // Without the TUI, stdout can be a pipe: write no escape codes.
         if tui::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
     let quiet = cli.print.is_some();
 
     if !quiet {
-        eprintln!("claude-code-rs v0.1.0\n");
+        eprintln!("tack v0.1.0\n");
     }
 
     // An exported key wins over saved credentials, as with `claude`.
@@ -228,7 +228,7 @@ async fn main() -> Result<()> {
         Pick::New => history::new_id(),
     };
 
-    // A second ccrs on this id would erase our turns.
+    // A second tack on this id would erase our turns.
     let lock = history::lock(&id)?;
 
     let stored = match pick {
@@ -311,8 +311,8 @@ async fn main() -> Result<()> {
 }
 
 #[cfg(feature = "crosstalk")]
-async fn start_crosstalk(id: &str) -> Result<Arc<claude_code_core::crosstalk::Client>> {
-    let client = claude_code_core::crosstalk::Client::new(id)?;
+async fn start_crosstalk(id: &str) -> Result<Arc<tack_core::crosstalk::Client>> {
+    let client = tack_core::crosstalk::Client::new(id)?;
     client.start().await?;
     Ok(Arc::new(client))
 }
@@ -330,7 +330,7 @@ fn load_dotenv() {
 
     for (name, value) in vars.flatten() {
         if NOT_FROM_DOTENV.contains(&name.as_str()) {
-            eprintln!("ccrs: ignored {name} from a .env file; set it in the environment");
+            eprintln!("tack: ignored {name} from a .env file; set it in the environment");
             continue;
         }
 
